@@ -1,0 +1,21 @@
+[package]
+name = "warden"
+version = "0.1.0"
+edition = "2021"
+description = "Unattended AI pull request reviews for Azure DevOps"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+prr = { path = "../.." }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-opener = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time", "io-util", "sync"] }
+
+[dev-dependencies]
+tempfile = "3"
