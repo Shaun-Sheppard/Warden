@@ -7,6 +7,32 @@ This repository holds two front ends over one Rust core:
 
 ## Warden
 
+### Install
+
+Download the latest installer from the [Releases page](https://github.com/Shaun-Sheppard/Warden/releases).
+
+- **Mac:** open the `.dmg` and drag Warden to Applications. It runs on Apple Silicon and Intel Macs.
+- **Windows:** run the `-setup.exe`.
+
+The installers are not code-signed, so the system warns on first launch:
+
+- **Mac:** if you see "Warden can't be opened" or "is damaged", open System Settings → Privacy & Security and choose **Open Anyway**, or run `xattr -dr com.apple.quarantine /Applications/Warden.app` in Terminal.
+- **Windows:** on the "Windows protected your PC" screen choose **More info → Run anyway**.
+
+You also need `git` and the [Claude Code CLI](https://claude.com/claude-code) installed and signed in (`claude auth login`), and an Azure DevOps personal access token with Code (Read & Write) and Work Items (Read).
+
+The Windows build has not been tested on a real machine yet; please report problems.
+
+### Releasing a new version
+
+Set the new version in `app/src-tauri/tauri.conf.json`, commit, then push a matching tag:
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+The Release workflow builds the Mac and Windows installers and publishes them.
+
 ### Build and run
 
 ```bash

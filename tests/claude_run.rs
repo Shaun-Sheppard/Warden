@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! Runs `claude::run` against a stand-in `claude` executable to check both
 //! output modes. One test only: it changes PATH for the whole process.
 
@@ -8,7 +9,9 @@ use prr::claude;
 use prr::pipeline::Progress;
 
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
-case "$*" in
+# The prompt arrives on standard input, the options as arguments.
+prompt=$(cat)
+case "$prompt $*" in
   *FAIL*)
     echo '{"type":"result","is_error":true,"result":"Not logged in"}'
     exit 1 ;;

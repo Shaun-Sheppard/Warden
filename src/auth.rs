@@ -4,13 +4,13 @@ const SERVICE: &str = "prr-azure-devops";
 const ACCOUNT: &str = "pat";
 
 fn entry() -> Result<keyring::Entry> {
-    keyring::Entry::new(SERVICE, ACCOUNT).map_err(|e| anyhow!("Could not open the macOS Keychain: {e}"))
+    keyring::Entry::new(SERVICE, ACCOUNT).map_err(|e| anyhow!("Could not open the system keychain: {e}"))
 }
 
 pub fn store_pat(pat: &str) -> Result<()> {
     entry()?
         .set_password(pat)
-        .map_err(|e| anyhow!("Could not store the PAT in the Keychain: {e}"))
+        .map_err(|e| anyhow!("Could not store the token in the system keychain: {e}"))
 }
 
 pub fn get_pat() -> Result<String> {
@@ -19,7 +19,7 @@ pub fn get_pat() -> Result<String> {
         Err(keyring::Error::NoEntry) => Err(anyhow!(
             "No Personal Access Token found. Run `prr auth login` first."
         )),
-        Err(e) => Err(anyhow!("Could not read the PAT from the Keychain: {e}")),
+        Err(e) => Err(anyhow!("Could not read the token from the system keychain: {e}")),
     }
 }
 
@@ -28,6 +28,6 @@ pub fn delete_pat() -> Result<bool> {
     match entry()?.delete_credential() {
         Ok(()) => Ok(true),
         Err(keyring::Error::NoEntry) => Ok(false),
-        Err(e) => Err(anyhow!("Could not remove the PAT from the Keychain: {e}")),
+        Err(e) => Err(anyhow!("Could not remove the token from the system keychain: {e}")),
     }
 }

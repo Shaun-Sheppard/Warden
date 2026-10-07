@@ -24,12 +24,28 @@ impl GitAuth {
     }
 }
 
+/// File names a command can have on this platform, most preferred first.
+/// On Windows a real `.exe` is preferred over a `.cmd` shim, which cannot
+/// be handed every kind of argument safely.
+fn executable_names(name: &str) -> Vec<String> {
+    if cfg!(windows) {
+        ["exe", "cmd", "bat"].iter().map(|ext| format!("{name}.{ext}")).collect()
+    } else {
+        vec![name.to_string()]
+    }
+}
+
+/// Full path of an external tool, searched for on PATH.
+pub fn find_tool(name: &str) -> Option<PathBuf> {
+    let dirs: Vec<PathBuf> = std::env::split_paths(&std::env::var_os("PATH")?).collect();
+    executable_names(name)
+        .iter()
+        .find_map(|file| dirs.iter().map(|dir| dir.join(file)).find(|p| p.is_file()))
+}
+
 /// Checks that an external tool is on PATH before we depend on it.
 pub fn ensure_tool(name: &str) -> Result<()> {
-    let found = std::env::var_os("PATH")
-        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(name).is_file()))
-        .unwrap_or(false);
-    if found {
+    if find_tool(name).is_some() {
         return Ok(());
     }
     let hint = match name {

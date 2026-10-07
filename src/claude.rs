@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 use crate::pipeline::{Progress, ProgressTx};
 use crate::review::extract_result;
@@ -14,11 +14,13 @@ pub const ALLOWED_TOOLS: &str =
 /// Denied explicitly so a permissive user/project settings file cannot re-enable them.
 pub const DISALLOWED_TOOLS: &str = "Edit,Write,NotebookEdit";
 
+/// Arguments for a headless run. The prompt itself is sent on standard
+/// input: it is long and multi-line, which command lines (Windows `.cmd`
+/// shims especially) cannot carry reliably.
 /// `stream` asks for one JSON event per line, so tool activity can be shown live.
-pub fn build_args(prompt: &str, stream: bool) -> Vec<String> {
+pub fn build_args(stream: bool) -> Vec<String> {
     let mut args = vec![
         "-p".to_string(),
-        prompt.to_string(),
         "--output-format".to_string(),
         if stream { "stream-json" } else { "json" }.to_string(),
     ];
@@ -85,10 +87,11 @@ pub async fn run(
     progress: Option<&ProgressTx>,
 ) -> Result<String> {
     let stream = progress.is_some();
-    let mut child = tokio::process::Command::new("claude")
-        .args(build_args(prompt, stream))
+    let program = crate::git::find_tool("claude").unwrap_or_else(|| "claude".into());
+    let mut child = tokio::process::Command::new(program)
+        .args(build_args(stream))
         .current_dir(repo)
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         // Dropping the future on timeout or cancellation must not leave Claude running.
@@ -101,6 +104,13 @@ pub async fn run(
                 anyhow!("Could not start `claude`: {e}")
             }
         })?;
+    let mut stdin = child.stdin.take().expect("stdin is piped");
+    let prompt_text = prompt.to_string();
+    // Written from its own task so a full pipe can never stall reading the output.
+    tokio::spawn(async move {
+        let _ = stdin.write_all(prompt_text.as_bytes()).await;
+        let _ = stdin.shutdown().await;
+    });
     let stdout = child.stdout.take().expect("stdout is piped");
     let mut stderr = child.stderr.take().expect("stderr is piped");
     let stderr_task = tokio::spawn(async move {
@@ -165,8 +175,8 @@ mod tests {
 
     #[test]
     fn args_are_headless_json_and_read_only() {
-        let args = build_args("review this", false);
-        assert_eq!(&args[..4], ["-p", "review this", "--output-format", "json"]);
+        let args = build_args(false);
+        assert_eq!(&args[..3], ["-p", "--output-format", "json"]);
         assert!(!args.contains(&"--verbose".to_string()));
         let allowed = &args[args.iter().position(|a| a == "--allowedTools").unwrap() + 1];
         assert_eq!(
@@ -180,9 +190,9 @@ mod tests {
 
     #[test]
     fn streaming_args_keep_the_same_tool_limits() {
-        let args = build_args("p", true);
-        assert_eq!(&args[2..5], ["--output-format", "stream-json", "--verbose"]);
-        assert_eq!(args[5..], build_args("p", false)[4..]);
+        let args = build_args(true);
+        assert_eq!(&args[1..4], ["--output-format", "stream-json", "--verbose"]);
+        assert_eq!(args[4..], build_args(false)[3..]);
     }
 
     #[test]

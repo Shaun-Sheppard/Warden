@@ -65,10 +65,16 @@ impl Default for ReviewConfig {
     }
 }
 
-fn home() -> Result<PathBuf> {
-    std::env::var_os("HOME")
+/// The user's home directory (`HOME`, or `USERPROFILE` on Windows).
+pub fn home_dir() -> Option<PathBuf> {
+    ["HOME", "USERPROFILE"]
+        .iter()
+        .find_map(|key| std::env::var_os(key).filter(|v| !v.is_empty()))
         .map(PathBuf::from)
-        .ok_or_else(|| anyhow!("HOME is not set; cannot locate config and cache directories"))
+}
+
+fn home() -> Result<PathBuf> {
+    home_dir().ok_or_else(|| anyhow!("Could not find your home directory; cannot locate config and cache directories"))
 }
 
 pub fn config_path() -> Result<PathBuf> {
@@ -80,8 +86,7 @@ pub fn cache_dir() -> Result<PathBuf> {
 }
 
 pub fn expand_tilde(path: &str) -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    match (path, home) {
+    match (path, home_dir()) {
         ("~", Some(home)) => home,
         (p, Some(home)) if p.starts_with("~/") => home.join(&p[2..]),
         _ => PathBuf::from(path),

@@ -1,0 +1,67 @@
+# Builds the Warden installers and publishes them as a GitHub release.
+# Runs when a version tag (v0.1.0, v0.2.0, ...) is pushed, or on demand.
+# The tag must match the version in app/src-tauri/tauri.conf.json.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (Apple Silicon and Intel)
+            os: macos-latest
+            args: --target universal-apple-darwin
+            targets: aarch64-apple-darwin,x86_64-apple-darwin
+          - name: Windows
+            os: windows-latest
+            args: ""
+            targets: ""
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.targets }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install UI dependencies
+        working-directory: app
+        run: npm ci
+
+      # The builds are unsigned (macOS is ad-hoc signed), so both systems
+      # warn on first launch; the README explains how to open the app.
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: app
+          args: ${{ matrix.args }}
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
+          releaseName: Warden v__VERSION__
+          releaseBody: |
+            **Mac:** download the `.dmg`, open it and drag Warden to Applications.
+            **Windows:** download the `-setup.exe` and run it.
+
+            These builds are not code-signed, so your system will warn the first time you open Warden. See "Install" in the README for how to get past that.
+
+            Warden needs `git` and the Claude Code CLI (signed in) on the same machine.
+          releaseDraft: false
+          prerelease: false

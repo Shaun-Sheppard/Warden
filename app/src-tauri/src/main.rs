@@ -46,7 +46,7 @@ fn inherit_shell_path() {
     if let Some(current) = std::env::var_os("PATH") {
         dirs.extend(std::env::split_paths(&current));
     }
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+    if let Some(home) = prr::config::home_dir() {
         dirs.push(home.join(".local/bin"));
         dirs.push(home.join(".claude/local"));
     }
@@ -72,12 +72,6 @@ fn prefer_cli(cli_path: &str) {
     if let Ok(joined) = std::env::join_paths(dirs) {
         std::env::set_var("PATH", joined);
     }
-}
-
-fn find_on_path(name: &str) -> Option<PathBuf> {
-    std::env::split_paths(&std::env::var_os("PATH")?)
-        .map(|dir| dir.join(name))
-        .find(|p| p.is_file())
 }
 
 #[tauri::command]
@@ -193,8 +187,8 @@ struct ClaudeStatus {
 
 #[tauri::command(async)]
 fn claude_status() -> ClaudeStatus {
-    let mut status = ClaudeStatus { git_found: find_on_path("git").is_some(), ..Default::default() };
-    let Some(path) = find_on_path("claude") else { return status };
+    let mut status = ClaudeStatus { git_found: prr::git::find_tool("git").is_some(), ..Default::default() };
+    let Some(path) = prr::git::find_tool("claude") else { return status };
     status.found = true;
     status.path = path.display().to_string();
     let run = |args: &[&str]| {
