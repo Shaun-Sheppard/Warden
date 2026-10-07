@@ -270,6 +270,10 @@ fn main() {
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
+        // Updates are fetched from GitHub Releases and must be signed with
+        // the key whose public half is in tauri.conf.json.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             let handle = app.handle().clone();

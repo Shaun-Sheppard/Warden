@@ -168,6 +168,11 @@ export const mockApi: Api = {
   importLegacy: () => later(null),
   defaultPrompt: () => later("You are an experienced engineer reviewing a pull request.\n\nReview guidance:\n- First, check the change against the acceptance criteria of the linked work items.\n- Then look for defects the change introduces.\n- Look specifically for security problems the change introduces."),
   open: (url) => { window.open(url, "_blank"); return later(undefined); },
+  appVersion: () => later("0.2.0"),
+  checkForUpdate: () => later(location.search.includes("update") ? { version: "0.3.0", notes: "Faster checks and a fix for long branch names." } : null, 500),
+  installUpdate: async (onProgress) => {
+    for (let p = 0; p <= 100; p += 20) { onProgress(p); await later(undefined, 250); }
+  },
   onLive: (h) => { liveHandlers.add(h); return () => liveHandlers.delete(h); },
   onHistory: (h) => { historyHandlers.add(h); return () => historyHandlers.delete(h); },
   onSettings: () => () => {},

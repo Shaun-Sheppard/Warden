@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api } from "./api";
+import { api, type AvailableUpdate } from "./api";
 import { Setup, SettingsView } from "./forms";
 import type { ClaudeStatus, HistoryRecord, Live, Settings } from "./types";
 import { CheckButton, Segmented } from "./ui";
@@ -8,6 +8,35 @@ import { Activity, Detail, History } from "./views";
 
 type View = "activity" | "history" | "detail" | "settings";
 type Filter = "all" | "approved" | "rejected" | "failed";
+
+const UPDATE_CHECK_MS = 6 * 60 * 60 * 1000;
+
+/** Offers a newer release; installing is always the user's choice. */
+function UpdateBanner({ update, reviewing, onDismiss }: { update: AvailableUpdate; reviewing: boolean; onDismiss: () => void }) {
+  const [state, setState] = useState<{ phase: "idle" | "installing" | "error"; percent: number | null; error: string }>({ phase: "idle", percent: null, error: "" });
+  const install = () => {
+    setState({ phase: "installing", percent: null, error: "" });
+    api.installUpdate((percent) => setState({ phase: "installing", percent, error: "" }))
+      .catch((e) => setState({ phase: "error", percent: null, error: String(e) }));
+  };
+  return (
+    <div className="banner tint-ok" role="status">
+      <b className="tone-ok">Warden {update.version} is available</b>
+      <span className="grow">
+        {state.phase === "installing" ? `Downloading${state.percent === null ? "…" : ` ${state.percent}%`} · Warden will restart when it is ready.`
+          : state.phase === "error" ? <span className="tone-critical selectable">Update failed: {state.error}</span>
+          : reviewing ? "A review is running. You can update once it has finished."
+          : update.notes || "Install it now; Warden restarts and carries on monitoring."}
+      </span>
+      {state.phase !== "installing" && (
+        <>
+          <button className="btn primary" onClick={install} disabled={reviewing}>{state.phase === "error" ? "Try again" : "Update and restart"}</button>
+          <button className="btn ghost" onClick={onDismiss}>Later</button>
+        </>
+      )}
+    </div>
+  );
+}
 
 function useSystemDark(): boolean {
   const query = useMemo(() => window.matchMedia("(prefers-color-scheme: dark)"), []);
@@ -32,6 +61,21 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [now, setNow] = useState(Date.now());
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [update, setUpdate] = useState<AvailableUpdate | null>(null);
+  const [updateHidden, setUpdateHidden] = useState(false);
+
+  const lookForUpdate = () =>
+    api.checkForUpdate().then((found) => {
+      setUpdate(found);
+      if (found) setUpdateHidden(false);
+    }, () => {
+      // Offline or GitHub unreachable: stay quiet and try again later.
+    });
+  useEffect(() => {
+    lookForUpdate();
+    const timer = setInterval(lookForUpdate, UPDATE_CHECK_MS);
+    return () => clearInterval(timer);
+  }, []);
   const bodyRef = useRef<HTMLDivElement>(null);
   const systemDark = useSystemDark();
 
@@ -167,6 +211,7 @@ export default function App() {
           )}
         </header>
         <div className="body" ref={bodyRef}>
+          {update && !updateHidden && <UpdateBanner update={update} reviewing={reviewing} onDismiss={() => setUpdateHidden(true)} />}
           {saveError && <div className="banner tint-critical" role="alert"><b className="tone-critical">Settings were not saved</b><span className="grow">{saveError}</span></div>}
           {claudeProblem && view !== "settings" && (
             <div className="banner tint-critical" role="alert">
@@ -180,7 +225,7 @@ export default function App() {
           {view === "detail" && (record
             ? <Detail record={record} onRetry={() => api.retryReview(record.pr.id).then(() => setView("activity"))} onSettings={() => setView("settings")} />
             : <div className="empty">This review is no longer in the history.</div>)}
-          {view === "settings" && <SettingsView settings={settings} change={change} onRunSetup={() => change({ setupComplete: false })} />}
+          {view === "settings" && <SettingsView settings={settings} change={change} onRunSetup={() => change({ setupComplete: false })} onUpdateFound={lookForUpdate} />}
         </div>
       </main>
     </div>

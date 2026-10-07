@@ -23,9 +23,15 @@ You also need `git` and the [Claude Code CLI](https://claude.com/claude-code) in
 
 The Windows build has not been tested on a real machine yet; please report problems.
 
+### Updates
+
+Installed copies check GitHub for a newer release when they start and every six hours, and show an "Update and restart" banner when one exists. Nothing is installed without the user choosing to. Settings → About has a manual "Check for updates".
+
+Update packages are signed with a Tauri updater key. The public half is in `app/src-tauri/tauri.conf.json`; the private half is the `TAURI_SIGNING_PRIVATE_KEY` secret on the GitHub repository and must be kept safe: without it, existing installs cannot be updated.
+
 ### Releasing a new version
 
-Set the new version in `app/src-tauri/tauri.conf.json`, commit, then push a matching tag:
+Set the new version in `app/src-tauri/tauri.conf.json` (and, to keep them in step, `app/package.json` and `app/src-tauri/Cargo.toml`), commit, then push a matching tag:
 
 ```bash
 git tag v0.2.0 && git push origin v0.2.0
@@ -38,8 +44,10 @@ The Release workflow builds the Mac and Windows installers and publishes them.
 ```bash
 cd app
 npm install
-npx tauri build --bundles app     # produces target/release/bundle/macos/Warden.app
+npx tauri build --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'
 ```
+
+That produces `target/release/bundle/macos/Warden.app`. The `--config` part skips signing an update package, which needs the release key.
 
 For development, `npx tauri dev` runs the app with live reload. `npm run dev` on its own serves the UI in a browser against sample data (`?setup`, `?idle` and `?error` show other states).
 

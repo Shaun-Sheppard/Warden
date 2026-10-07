@@ -187,7 +187,45 @@ function PromptSetting({ settings, change }: { settings: Settings; change: Chang
   );
 }
 
-export function SettingsView({ settings, change, onRunSetup }: { settings: Settings; change: Change; onRunSetup: () => void }) {
+/** Version, and a manual update check. */
+function About({ onUpdateFound }: { onUpdateFound: () => void }) {
+  const [version, setVersion] = useState("");
+  const [status, setStatus] = useState<{ text: string; tone: string }>({ text: "", tone: "tone-faint" });
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    api.appVersion().then(setVersion);
+  }, []);
+  const check = async () => {
+    setBusy(true);
+    setStatus({ text: "Checking…", tone: "tone-muted" });
+    try {
+      const update = await api.checkForUpdate();
+      if (update) {
+        setStatus({ text: `Version ${update.version} is available`, tone: "tone-ok" });
+        onUpdateFound();
+      } else {
+        setStatus({ text: "You have the latest version", tone: "tone-ok" });
+      }
+    } catch (e) {
+      setStatus({ text: `Could not check: ${e}`, tone: "tone-critical" });
+    }
+    setBusy(false);
+  };
+  return (
+    <div className="fields">
+      <span className="mono selectable">Warden {version}</span>
+      <div className="inline">
+        <button className="btn" onClick={check} disabled={busy}>Check for updates</button>
+        <span className={`help ${status.tone}`} role="status">{status.text}</span>
+      </div>
+      <span className="help">Warden checks GitHub for new releases when it starts and every few hours, and asks before installing one.</span>
+    </div>
+  );
+}
+
+export function SettingsView({ settings, change, onRunSetup, onUpdateFound }: {
+  settings: Settings; change: Change; onRunSetup: () => void; onUpdateFound: () => void;
+}) {
   const [projectChoices, setProjectChoices] = useState<string[]>([]);
   const [claude, recheck] = useClaudeStatus(settings.cliPath);
   return (
@@ -235,6 +273,11 @@ export function SettingsView({ settings, change, onRunSetup }: { settings: Setti
           </label>
           <ClaudeCheck status={claude} onRecheck={recheck} />
         </div>
+      </section>
+
+      <section className="setting-group">
+        <div><h2>About</h2><span className="help">Version and updates.</span></div>
+        <About onUpdateFound={onUpdateFound} />
       </section>
 
       <section className="setting-group">

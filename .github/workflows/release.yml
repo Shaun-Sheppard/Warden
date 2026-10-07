@@ -51,6 +51,9 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signs the update packages so installed copies will accept them.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         with:
           projectPath: app
           args: ${{ matrix.args }}
@@ -63,5 +66,8 @@ jobs:
             These builds are not code-signed, so your system will warn the first time you open Warden. See "Install" in the README for how to get past that.
 
             Warden needs `git` and the Claude Code CLI (signed in) on the same machine.
+          # Publish latest.json, which installed copies read to find updates.
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true
           releaseDraft: false
           prerelease: false

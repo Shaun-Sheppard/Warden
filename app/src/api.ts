@@ -1,6 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check, type Update } from "@tauri-apps/plugin-updater";
 import { mockApi } from "./mock";
 import type { ClaudeStatus, Connection, HistoryRecord, Legacy, Live, Settings } from "./types";
 
@@ -19,10 +22,22 @@ export interface Api {
   importLegacy(): Promise<Legacy | null>;
   defaultPrompt(): Promise<string>;
   open(url: string): Promise<void>;
+  appVersion(): Promise<string>;
+  /** The newer release, if there is one. */
+  checkForUpdate(): Promise<AvailableUpdate | null>;
+  /** Downloads and installs the update found by `checkForUpdate`, then restarts. */
+  installUpdate(onProgress: (percent: number | null) => void): Promise<void>;
   onLive(handler: (live: Live) => void): () => void;
   onHistory(handler: (history: HistoryRecord[]) => void): () => void;
   onSettings(handler: (settings: Settings) => void): () => void;
 }
+
+export interface AvailableUpdate {
+  version: string;
+  notes: string;
+}
+
+let pendingUpdate: Update | null = null;
 
 function subscribe<T>(event: string, handler: (payload: T) => void): () => void {
   const pending = listen<T>(event, (e) => handler(e.payload));
@@ -46,6 +61,24 @@ const tauriApi: Api = {
   importLegacy: () => invoke("import_legacy"),
   defaultPrompt: () => invoke("default_prompt"),
   open: (url) => openUrl(url),
+  appVersion: () => getVersion(),
+  checkForUpdate: async () => {
+    pendingUpdate = await check();
+    return pendingUpdate ? { version: pendingUpdate.version, notes: pendingUpdate.body ?? "" } : null;
+  },
+  installUpdate: async (onProgress) => {
+    if (!pendingUpdate) throw new Error("No update is ready to install.");
+    let total = 0;
+    let received = 0;
+    await pendingUpdate.downloadAndInstall((event) => {
+      if (event.event === "Started") total = event.data.contentLength ?? 0;
+      if (event.event === "Progress") {
+        received += event.data.chunkLength;
+        onProgress(total ? Math.min(100, Math.round((received / total) * 100)) : null);
+      }
+    });
+    await relaunch();
+  },
   onLive: (handler) => subscribe("live", handler),
   onHistory: (handler) => subscribe("history", handler),
   onSettings: (handler) => subscribe("settings", handler),
