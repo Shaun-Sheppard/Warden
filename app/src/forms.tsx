@@ -249,6 +249,8 @@ export function SettingsView({ settings, change, onRunSetup, onUpdateFound }: {
           </div>
           <SwitchRow title="Dry run" on={settings.dryRun} onChange={(dryRun) => change({ dryRun })}
             help="Review pull requests but never post, vote or complete. Use it to see what Warden would do." />
+          <SwitchRow title="Notifications" on={settings.notifications} onChange={(notifications) => change({ notifications })}
+            help="Show a system notification when a new pull request starts being reviewed, when the review finishes, and when an update is available." />
           <SwitchRow title="Tag the author in the comment" on={settings.mentionAuthor} onChange={(mentionAuthor) => change({ mentionAuthor })} />
           <ApproveSetting settings={settings} change={change} />
           <div className={`switch-row ${settings.approveAndComplete ? "" : "dimmed"}`}><span className="label">Merge type</span>

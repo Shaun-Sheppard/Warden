@@ -34,6 +34,34 @@ const VOTE_WAITING: i32 = -5;
 pub enum Change {
     Live(Live),
     History(Vec<Record>),
+    /// Something worth a system notification.
+    Notify { title: String, body: String },
+}
+
+/// The notification shown when a review ends.
+pub fn finished_notice(record: &Record) -> (String, String) {
+    let pr = format!("PR {}: {}", record.pr.id, record.pr.title);
+    let c = record.counts;
+    let issues = format!("{} critical, {} major, {} minor", c.critical, c.major, c.minor);
+    let (title, detail) = match record.status {
+        Outcome::Failed => ("Review failed".to_string(), record.error.clone().unwrap_or_default().lines().next().unwrap_or("").to_string()),
+        Outcome::Approved => ("Review finished: approve".to_string(), issues),
+        _ => ("Review finished: reject".to_string(), issues),
+    };
+    let action = if record.status == Outcome::Failed {
+        ""
+    } else if record.dry_run {
+        " · dry run, nothing posted"
+    } else if record.auto_complete {
+        " · approved, auto-complete set"
+    } else if record.vote.as_deref() == Some("waitingForAuthor") {
+        " · waiting for author"
+    } else if record.posted {
+        " · comment posted"
+    } else {
+        ""
+    };
+    (title, format!("{pr}\n{detail}{action}"))
 }
 
 pub type Notifier = Box<dyn Fn(Change) + Send + Sync>;
@@ -232,6 +260,12 @@ impl Engine {
 
     fn emit_live(&self) {
         (self.notifier)(Change::Live(self.live()));
+    }
+
+    fn notify(&self, title: impl Into<String>, body: impl Into<String>) {
+        if self.settings().notifications {
+            (self.notifier)(Change::Notify { title: title.into(), body: body.into() });
+        }
     }
 
     fn emit_history(&self) {
@@ -544,6 +578,10 @@ impl Engine {
             });
         }
         self.emit_live();
+        self.notify(
+            "New pull request: review started",
+            format!("PR {id}: {}\n{} · {}/{}", info.title, info.author, info.project, info.repo),
+        );
 
         let client = org.with_project(&info.project);
         let config = pipeline_config(settings, &info.project);
@@ -716,6 +754,7 @@ impl Engine {
 
         record.finished_at = Utc::now();
         record.duration_secs = (record.finished_at - started).num_seconds().max(0) as u64;
+        let notice;
         {
             let mut shared = self.shared.lock().unwrap();
             if let Some(current) = shared.live.current.as_mut() {
@@ -724,6 +763,7 @@ impl Engine {
                 current.record_id = Some(record.record_id.clone());
                 record.lines = current.lines.clone();
             }
+            notice = finished_notice(&record);
             shared.history.insert(0, record);
             shared.history.truncate(MAX_HISTORY);
             if let Err(e) = self.store.save_history(&shared.history) {
@@ -732,6 +772,7 @@ impl Engine {
         }
         self.emit_history();
         self.emit_live();
+        self.notify(notice.0, notice.1);
     }
 
     /// Approves (and sets auto-complete) or marks "waiting for author".
@@ -865,6 +906,44 @@ mod tests {
         assert_eq!(check(&claim("other", "reviewed", "c1", 500, Some("approved"))), ClaimCheck::Done(Outcome::Approved));
         assert_eq!(check(&claim("other", "reviewed", "c1", 500, Some("rejected"))), ClaimCheck::Done(Outcome::Rejected));
         assert_eq!(check(&claim("other", "reviewed", "c0", 5, Some("approved"))), ClaimCheck::Free);
+    }
+
+    #[test]
+    fn finished_notice_says_what_was_decided_and_done() {
+        let info = pr_info(&pr(7, "Ann", "c", false), &AdoClient::new("org", "", "pat").unwrap());
+        let mut record = Record {
+            record_id: "7-1".into(),
+            pr: PrInfo { title: "Add cache".into(), ..info },
+            status: Outcome::Approved,
+            dry_run: false,
+            review: None,
+            counts: Counts { critical: 0, major: 0, minor: 2 },
+            comment: None,
+            posted: true,
+            vote: Some("approvedWithSuggestions".into()),
+            auto_complete: true,
+            merged: false,
+            stats: None,
+            started_at: Utc::now(),
+            finished_at: Utc::now(),
+            duration_secs: 1,
+            error: None,
+            lines: vec![],
+            work_items: vec![],
+        };
+        assert_eq!(
+            finished_notice(&record),
+            ("Review finished: approve".into(), "PR 7: Add cache\n0 critical, 0 major, 2 minor · approved, auto-complete set".into())
+        );
+        record.status = Outcome::Rejected;
+        record.auto_complete = false;
+        record.vote = Some("waitingForAuthor".into());
+        assert!(finished_notice(&record).1.ends_with("· waiting for author"));
+        record.dry_run = true;
+        assert!(finished_notice(&record).1.ends_with("· dry run, nothing posted"));
+        record.status = Outcome::Failed;
+        record.error = Some("Claude timed out after 600s.\nmore".into());
+        assert_eq!(finished_notice(&record), ("Review failed".into(), "PR 7: Add cache\nClaude timed out after 600s.".into()));
     }
 
     #[test]

@@ -64,10 +64,19 @@ export default function App() {
   const [update, setUpdate] = useState<AvailableUpdate | null>(null);
   const [updateHidden, setUpdateHidden] = useState(false);
 
+  const notifiedVersion = useRef<string | null>(null);
+  const notificationsOn = useRef(true);
+  notificationsOn.current = settings?.notifications ?? true;
+
   const lookForUpdate = () =>
     api.checkForUpdate().then((found) => {
       setUpdate(found);
       if (found) setUpdateHidden(false);
+      // Once per version, so the offer is seen even when the window is closed.
+      if (found && notificationsOn.current && notifiedVersion.current !== found.version) {
+        notifiedVersion.current = found.version;
+        api.notify(`Warden ${found.version} is available`, "Open Warden to update.");
+      }
     }, () => {
       // Offline or GitHub unreachable: stay quiet and try again later.
     });

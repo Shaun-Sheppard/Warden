@@ -30,6 +30,8 @@ pub struct Settings {
     pub mention_author: bool,
     /// Custom review guidance; the built-in guidance is used when empty.
     pub review_prompt: String,
+    /// Show a system notification when a review starts and when it finishes.
+    pub notifications: bool,
 }
 
 impl Default for Settings {
@@ -50,6 +52,7 @@ impl Default for Settings {
             theme: "system".to_string(),
             mention_author: true,
             review_prompt: String::new(),
+            notifications: true,
         }
     }
 }

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
+import { sendNotification } from "@tauri-apps/plugin-notification";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
@@ -23,6 +24,8 @@ export interface Api {
   defaultPrompt(): Promise<string>;
   open(url: string): Promise<void>;
   appVersion(): Promise<string>;
+  /** Shows a system notification. */
+  notify(title: string, body: string): void;
   /** The newer release, if there is one. */
   checkForUpdate(): Promise<AvailableUpdate | null>;
   /** Downloads and installs the update found by `checkForUpdate`, then restarts. */
@@ -62,6 +65,7 @@ const tauriApi: Api = {
   defaultPrompt: () => invoke("default_prompt"),
   open: (url) => openUrl(url),
   appVersion: () => getVersion(),
+  notify: (title, body) => sendNotification({ title, body }),
   checkForUpdate: async () => {
     pendingUpdate = await check();
     return pendingUpdate ? { version: pendingUpdate.version, notes: pendingUpdate.body ?? "" } : null;

@@ -63,6 +63,8 @@ Requires Rust, Node, `git`, and the Claude Code CLI signed in (`claude auth logi
 6. **Several people running Warden:** before reviewing, a copy leaves a hidden marker on the pull request (the `Warden.Review` property, not visible in Azure DevOps) saying who is reviewing which commit. Other copies skip that PR, show it under "Being reviewed elsewhere", and do not review a commit another copy has already reviewed. A marker left by a copy that quit mid-review expires after 20 minutes. "Review again" overrides the marker. Azure DevOps has no lock, so two copies that start within the same couple of seconds can, rarely, both review.
 7. **History:** every review is kept with its issues, the exact comment posted, a timeline and the log. Failed reviews are shown with the reason and retried up to three times; "Review again" re-runs one on demand.
 
+A system notification is shown when a new pull request starts being reviewed, when the review finishes (with the decision and what was done), and when an update is available; turn them off under Settings → Review behaviour.
+
 Closing the window keeps monitoring running; the tray icon has Open, Check now, Pause and Quit. **Dry run** (Settings) reviews without posting, voting or completing.
 
 Settings, history and tracking live in the app data directory (`~/Library/Application Support/dev.warden.app` on macOS).

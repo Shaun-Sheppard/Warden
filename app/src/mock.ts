@@ -77,7 +77,7 @@ let settings: Settings = {
   organization: "harbourline", projects: ["Payments", "Customer Web", "Platform"],
   people: ["Priya Nair", "Tom Okafor", "Aisha Rahman"], pollSeconds: 60, approveAndComplete: true,
   mergeStrategy: "squash", deleteSourceBranch: true, cliPath: "", dryRun: false, paused: false,
-  reviewExisting: false, setupComplete: !location.search.includes("setup"), theme: "system", mentionAuthor: true, reviewPrompt: "",
+  reviewExisting: false, setupComplete: !location.search.includes("setup"), theme: "system", mentionAuthor: true, reviewPrompt: "", notifications: true,
 };
 
 let tick = location.search.includes("idle") ? -1 : 5;
@@ -169,7 +169,8 @@ export const mockApi: Api = {
   importLegacy: () => later(null),
   defaultPrompt: () => later("You are an experienced engineer reviewing a pull request.\n\nReview guidance:\n- First, check the change against the acceptance criteria of the linked work items.\n- Then look for defects the change introduces.\n- Look specifically for security problems the change introduces."),
   open: (url) => { window.open(url, "_blank"); return later(undefined); },
-  appVersion: () => later("0.2.0"),
+  appVersion: () => later("0.4.0"),
+  notify: () => {},
   checkForUpdate: () => later(location.search.includes("update") ? { version: "0.3.0", notes: "Faster checks and a fix for long branch names." } : null, 500),
   installUpdate: async (onProgress) => {
     for (let p = 0; p <= 100; p += 20) { onProgress(p); await later(undefined, 250); }

@@ -1,6 +1,6 @@
 [package]
 name = "warden"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "Unattended AI pull request reviews for Azure DevOps"
 
@@ -14,6 +14,7 @@ prr = { path = "../.." }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-notification = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-process = "2"
 tauri-plugin-updater = "2"

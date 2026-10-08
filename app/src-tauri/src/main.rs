@@ -270,6 +270,7 @@ fn main() {
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_process::init())
         // Updates are fetched from GitHub Releases and must be signed with
         // the key whose public half is in tauri.conf.json.
@@ -280,10 +281,18 @@ fn main() {
             let engine = Arc::new(Engine::new(
                 Store::new(dir),
                 Box::new(move |change| {
-                    let _ = match change {
-                        Change::Live(live) => handle.emit("live", live),
-                        Change::History(history) => handle.emit("history", history),
-                    };
+                    match change {
+                        Change::Live(live) => {
+                            let _ = handle.emit("live", live);
+                        }
+                        Change::History(history) => {
+                            let _ = handle.emit("history", history);
+                        }
+                        Change::Notify { title, body } => {
+                            use tauri_plugin_notification::NotificationExt;
+                            let _ = handle.notification().builder().title(title).body(body).show();
+                        }
+                    }
                 }),
             ));
             prefer_cli(&engine.settings().cli_path);

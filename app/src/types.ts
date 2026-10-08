@@ -39,6 +39,7 @@ export interface Settings {
   theme: "system" | "light" | "dark";
   mentionAuthor: boolean;
   reviewPrompt: string;
+  notifications: boolean;
 }
 
 export interface PrInfo {
