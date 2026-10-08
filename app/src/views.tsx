@@ -127,6 +127,20 @@ export function Activity({ live, history, settings, now, onOpen, onHistory }: {
               </div>
             ))}
           </div>
+          {live.claimed.length > 0 && (
+            <div className="rail-group">
+              <div className="section-label mono">Being reviewed elsewhere</div>
+              {live.claimed.map((c) => (
+                <div className="card queue-item" key={c.pr.id}>
+                  <Avatar name={c.by} />
+                  <div className="stack" style={{ gap: 3 }}>
+                    <span style={{ lineHeight: 1.35 }}>{c.pr.title}</span>
+                    <span className="count mono">#{c.pr.id} · by {c.by}'s Warden</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="rail-group">
             <div className="section-label mono row-between"><span>Recently reviewed</span><button className="link" onClick={onHistory}>All</button></div>
             {history.length === 0 && <span className="help">No reviews yet.</span>}

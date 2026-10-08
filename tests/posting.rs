@@ -488,3 +488,38 @@ async fn no_linked_work_items_makes_one_call_and_returns_nothing() {
     assert!(client(&server).linked_work_items("repo-id", 7).await.unwrap().is_empty());
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn pull_request_properties_round_trip() {
+    use wiremock::matchers::body_json;
+
+    let server = MockServer::start().await;
+    let props = "/org/proj/_apis/git/repositories/repo-id/pullRequests/7/properties";
+    Mock::given(method("GET"))
+        .and(path(props))
+        .and(query_param("api-version", "7.1-preview.1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 2,
+            "value": {
+                "Warden.Review": { "$type": "System.String", "$value": "{\"state\":\"reviewing\"}" },
+                "Other.Number": { "$type": "System.Int32", "$value": 3 }
+            }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path(props))
+        .and(header("content-type", "application/json-patch+json"))
+        .and(body_json(json!([{ "op": "add", "path": "/Warden.Review", "value": "x" }])))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "count": 1, "value": {} })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let c = client(&server);
+    let found = c.pr_properties("repo-id", 7).await.unwrap();
+    // Only string properties are returned.
+    assert_eq!(found.len(), 1);
+    assert_eq!(found["Warden.Review"], "{\"state\":\"reviewing\"}");
+    c.set_pr_property("repo-id", 7, "Warden.Review", "x").await.unwrap();
+}

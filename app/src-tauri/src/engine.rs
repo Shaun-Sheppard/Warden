@@ -7,7 +7,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::Notify;
 
-use prr::ado::{author_matches, auto_complete_body, AdoClient, PrFilter, PullRequest};
+use chrono::DateTime;
+use prr::ado::{author_matches, auto_complete_body, AdoClient, Identity, PrFilter, PullRequest};
 use prr::auto::approval_vote;
 use prr::config::{Config, ReviewConfig};
 use prr::flow::{self, Lead};
@@ -21,6 +22,12 @@ use crate::store::Store;
 pub const MAX_ATTEMPTS: u32 = 3;
 const MAX_HISTORY: usize = 200;
 const MAX_LINES: usize = 300;
+/// Hidden pull request property holding a copy's claim.
+const CLAIM_KEY: &str = "Warden.Review";
+/// A claim older than this is treated as abandoned (the copy crashed or quit).
+const CLAIM_TTL_MINUTES: i64 = 20;
+/// How long to wait after claiming before checking nobody else claimed too.
+const CLAIM_SETTLE: Duration = Duration::from_secs(3);
 /// Vote value for "Waiting for author".
 const VOTE_WAITING: i32 = -5;
 
@@ -43,8 +50,38 @@ pub struct Engine {
     store: Store,
     wake: Notify,
     notifier: Notifier,
-    /// The signed-in user's identity id, looked up when first needed.
-    my_id: Mutex<Option<String>>,
+    /// The signed-in user, looked up when first needed.
+    me: Mutex<Option<Identity>>,
+    /// PRs the user asked to review again, whatever other copies have done.
+    forced: Mutex<std::collections::BTreeSet<u64>>,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum ClaimCheck {
+    /// Nobody else has this commit; go ahead.
+    Free,
+    /// Another copy is reviewing it right now.
+    Busy(String),
+    /// Another copy already reviewed this commit.
+    Done(Outcome),
+}
+
+/// What another copy's marker on a PR means for this copy.
+pub fn check_claim(existing: Option<&Claim>, instance: &str, commit: &str, now: DateTime<Utc>) -> ClaimCheck {
+    let Some(claim) = existing else { return ClaimCheck::Free };
+    // Our own marker, or one about an older commit, does not hold us back.
+    if claim.instance == instance || claim.commit != commit {
+        return ClaimCheck::Free;
+    }
+    match claim.state.as_str() {
+        "reviewing" if (now - claim.at).num_minutes() < CLAIM_TTL_MINUTES => ClaimCheck::Busy(claim.by.clone()),
+        "reviewed" => ClaimCheck::Done(if claim.decision.as_deref() == Some("approved") {
+            Outcome::Approved
+        } else {
+            Outcome::Rejected
+        }),
+        _ => ClaimCheck::Free,
+    }
 }
 
 /// Whether a listed PR is due a review, given what was done with it before.
@@ -53,9 +90,10 @@ pub fn needs_review(pr: &PullRequest, tracked: Option<&Tracked>) -> bool {
     let commit = pr.last_merge_source_commit.as_ref().map(|c| c.commit_id.as_str());
     let moved = commit.is_some() && commit != tracked.commit.as_deref();
     match tracked.outcome {
-        Outcome::Approved | Outcome::Baseline => false,
-        // The author pushed a fix: look again so a stale vote never blocks the PR.
-        Outcome::Rejected => moved,
+        Outcome::Baseline => false,
+        // New commits always get a fresh look: a fix should clear a stale
+        // "waiting" vote, and an approval must not cover code nobody reviewed.
+        Outcome::Approved | Outcome::Rejected => moved,
         Outcome::Failed => moved || tracked.attempts < MAX_ATTEMPTS,
     }
 }
@@ -141,18 +179,27 @@ fn line(kind: &str, text: impl Into<String>) -> LogLine {
 
 impl Engine {
     pub fn new(store: Store, notifier: Notifier) -> Self {
+        let mut tracking = store.tracking();
+        if tracking.instance.is_empty() {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos());
+            tracking.instance = format!("{:x}-{:x}", std::process::id(), nanos);
+            let _ = store.save_tracking(&tracking);
+        }
         let shared = Shared {
             settings: store.settings(),
             live: Live::default(),
             history: store.history(),
-            tracking: store.tracking(),
+            tracking,
         };
         Self {
             shared: Mutex::new(shared),
             store,
             wake: Notify::new(),
             notifier,
-            my_id: Mutex::new(None),
+            me: Mutex::new(None),
+            forced: Mutex::new(Default::default()),
         }
     }
 
@@ -196,9 +243,9 @@ impl Engine {
             let mut shared = self.shared.lock().unwrap();
             // A different organization is a different set of PRs.
             if shared.settings.organization != settings.organization {
-                shared.tracking = Tracking::default();
+                shared.tracking = Tracking { instance: shared.tracking.instance.clone(), ..Default::default() };
                 self.store.save_tracking(&shared.tracking)?;
-                *self.my_id.lock().unwrap() = None;
+                *self.me.lock().unwrap() = None;
             }
             shared.settings = settings.clone();
         }
@@ -219,6 +266,8 @@ impl Engine {
             shared.tracking.prs.remove(&pr_id);
             self.store.save_tracking(&shared.tracking)?;
         }
+        // An explicit request overrides another copy's "already reviewed" marker.
+        self.forced.lock().unwrap().insert(pr_id);
         self.wake.notify_one();
         Ok(())
     }
@@ -321,6 +370,7 @@ impl Engine {
             }
             let todo = plan(&prs, &settings.people, &shared.tracking);
             shared.live.queue = todo.iter().map(|pr| pr_info(pr, &org)).collect();
+            shared.live.claimed.clear();
             shared.live.last_check = Some(Utc::now());
             shared.live.error = None;
             // The check itself is over; reviews that follow show as "reviewing".
@@ -338,6 +388,15 @@ impl Engine {
             {
                 let mut shared = self.shared.lock().unwrap();
                 shared.live.queue.retain(|q| q.id != pr.pull_request_id);
+            }
+            // A dry run changes nothing on Azure DevOps, so it leaves no marker either.
+            if !settings.dry_run {
+                let forced = self.forced.lock().unwrap().remove(&pr.pull_request_id);
+                let mine = self.acquire(&org, &pr_info(&pr, &org), forced).await;
+                self.emit_live();
+                if !mine {
+                    continue;
+                }
             }
             self.process(&org, &pat, &settings, pr).await;
         }
@@ -379,13 +438,91 @@ impl Engine {
         self.emit_history();
     }
 
-    async fn my_id(&self, org: &AdoClient) -> Result<String> {
-        if let Some(id) = self.my_id.lock().unwrap().clone() {
-            return Ok(id);
+    async fn me(&self, org: &AdoClient) -> Result<Identity> {
+        if let Some(me) = self.me.lock().unwrap().clone() {
+            return Ok(me);
         }
-        let id = org.current_user().await?.id;
-        *self.my_id.lock().unwrap() = Some(id.clone());
-        Ok(id)
+        let me = org.current_user().await?;
+        *self.me.lock().unwrap() = Some(me.clone());
+        Ok(me)
+    }
+
+    async fn my_id(&self, org: &AdoClient) -> Result<String> {
+        Ok(self.me(org).await?.id)
+    }
+
+    fn instance(&self) -> String {
+        self.shared.lock().unwrap().tracking.instance.clone()
+    }
+
+    async fn read_claim(client: &AdoClient, pr: &PrInfo) -> Result<Option<Claim>> {
+        let properties = client.pr_properties(&pr.repo_id, pr.id).await?;
+        Ok(properties.get(CLAIM_KEY).and_then(|text| serde_json::from_str(text).ok()))
+    }
+
+    async fn write_claim(&self, org: &AdoClient, pr: &PrInfo, state: &str, decision: Option<&str>) -> Result<()> {
+        let me = self.me(org).await?;
+        let claim = Claim {
+            instance: self.instance(),
+            by: if me.display_name.is_empty() { "another copy of Warden".to_string() } else { me.display_name },
+            state: state.to_string(),
+            commit: pr.commit.clone().unwrap_or_default(),
+            at: Utc::now(),
+            decision: decision.map(str::to_string),
+        };
+        org.with_project(&pr.project)
+            .set_pr_property(&pr.repo_id, pr.id, CLAIM_KEY, &serde_json::to_string(&claim)?)
+            .await
+    }
+
+    /// Claims a PR for this copy. Returns false if another copy has it (or
+    /// has already reviewed this commit), in which case this copy leaves it.
+    /// If the markers cannot be read or written, the review goes ahead
+    /// uncoordinated rather than not at all.
+    async fn acquire(&self, org: &AdoClient, pr: &PrInfo, forced: bool) -> bool {
+        let client = org.with_project(&pr.project);
+        let instance = self.instance();
+        let commit = pr.commit.clone().unwrap_or_default();
+        let busy = |by: String| {
+            let mut shared = self.shared.lock().unwrap();
+            shared.live.claimed.push(Claimed { pr: pr.clone(), by });
+        };
+
+        let existing = match Self::read_claim(&client, pr).await {
+            Ok(existing) => existing,
+            Err(e) => {
+                eprintln!("warden: could not read review markers on PR {}: {e:#}", pr.id);
+                return true;
+            }
+        };
+        if !forced {
+            match check_claim(existing.as_ref(), &instance, &commit, Utc::now()) {
+                ClaimCheck::Free => {}
+                ClaimCheck::Busy(by) => {
+                    busy(by);
+                    return false;
+                }
+                ClaimCheck::Done(outcome) => {
+                    // Remember it, so this commit is not looked up again every check.
+                    self.track(pr.id, Tracked { commit: pr.commit.clone(), outcome, attempts: 0 });
+                    return false;
+                }
+            }
+        }
+        if let Err(e) = self.write_claim(org, pr, "reviewing", None).await {
+            eprintln!("warden: could not mark PR {} as being reviewed: {e:#}", pr.id);
+            return true;
+        }
+        // Azure DevOps has no lock, so two copies can both get this far.
+        // The last marker written wins; the other copy sees it here and stands down.
+        tokio::time::sleep(CLAIM_SETTLE).await;
+        match Self::read_claim(&client, pr).await {
+            Ok(Some(claim)) if claim.instance != instance && claim.commit == commit && claim.state == "reviewing" => {
+                busy(claim.by);
+                false
+            }
+            _ => true,
+        }
     }
 
     async fn process(self: &Arc<Self>, org: &AdoClient, pat: &str, settings: &Settings, pr: PullRequest) {
@@ -565,6 +702,18 @@ impl Engine {
             }
         }
 
+        if !settings.dry_run {
+            // Tell other copies the outcome, or let go of the PR if the review failed.
+            let (state, decision) = match record.status {
+                Outcome::Approved => ("reviewed", Some("approved")),
+                Outcome::Rejected => ("reviewed", Some("rejected")),
+                _ => ("released", None),
+            };
+            if let Err(e) = self.write_claim(org, &record.pr, state, decision).await {
+                eprintln!("warden: could not update the review marker on PR {id}: {e:#}");
+            }
+        }
+
         record.finished_at = Utc::now();
         record.duration_secs = (record.finished_at - started).num_seconds().max(0) as u64;
         {
@@ -686,9 +835,47 @@ mod tests {
         let p = pr(1, "a", "c1", false);
         assert!(needs_review(&p, None));
         assert!(!needs_review(&p, Some(&tracked("c1", Outcome::Approved, 0))));
-        // Approved PRs are not looked at again, even after more commits.
-        assert!(!needs_review(&p, Some(&tracked("c0", Outcome::Approved, 0))));
+        // New commits after an approval are reviewed, so the approval never covers unseen code.
+        assert!(needs_review(&p, Some(&tracked("c0", Outcome::Approved, 0))));
         assert!(!needs_review(&p, Some(&Tracked { commit: None, outcome: Outcome::Baseline, attempts: 0 })));
+    }
+
+    #[test]
+    fn claims_from_other_copies_are_respected() {
+        let now = Utc::now();
+        let claim = |instance: &str, state: &str, commit: &str, minutes_ago: i64, decision: Option<&str>| Claim {
+            instance: instance.into(),
+            by: "Alex".into(),
+            state: state.into(),
+            commit: commit.into(),
+            at: now - chrono::Duration::minutes(minutes_ago),
+            decision: decision.map(str::to_string),
+        };
+        let check = |c: &Claim| check_claim(Some(c), "me", "c1", now);
+
+        assert_eq!(check_claim(None, "me", "c1", now), ClaimCheck::Free);
+        assert_eq!(check(&claim("other", "reviewing", "c1", 2, None)), ClaimCheck::Busy("Alex".into()));
+        // An abandoned claim, one about an older commit, a released one, or our own does not block.
+        assert_eq!(check(&claim("other", "reviewing", "c1", CLAIM_TTL_MINUTES + 1, None)), ClaimCheck::Free);
+        assert_eq!(check(&claim("other", "reviewing", "c0", 2, None)), ClaimCheck::Free);
+        assert_eq!(check(&claim("other", "released", "c1", 2, None)), ClaimCheck::Free);
+        assert_eq!(check(&claim("me", "reviewing", "c1", 2, None)), ClaimCheck::Free);
+        assert_eq!(check(&claim("me", "reviewed", "c1", 2, Some("approved"))), ClaimCheck::Free);
+        // Someone else already reviewed this exact commit.
+        assert_eq!(check(&claim("other", "reviewed", "c1", 500, Some("approved"))), ClaimCheck::Done(Outcome::Approved));
+        assert_eq!(check(&claim("other", "reviewed", "c1", 500, Some("rejected"))), ClaimCheck::Done(Outcome::Rejected));
+        assert_eq!(check(&claim("other", "reviewed", "c0", 5, Some("approved"))), ClaimCheck::Free);
+    }
+
+    #[test]
+    fn each_installation_has_a_stable_identity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let first = Engine::new(Store::new(tmp.path().to_path_buf()), Box::new(|_| {})).instance();
+        assert!(!first.is_empty());
+        let again = Engine::new(Store::new(tmp.path().to_path_buf()), Box::new(|_| {})).instance();
+        assert_eq!(first, again);
+        let other = tempfile::tempdir().unwrap();
+        assert_ne!(first, Engine::new(Store::new(other.path().to_path_buf()), Box::new(|_| {})).instance());
     }
 
     #[test]

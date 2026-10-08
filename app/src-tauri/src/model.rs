@@ -161,6 +161,31 @@ pub struct Live {
     pub error: Option<String>,
     pub current: Option<Current>,
     pub queue: Vec<PrInfo>,
+    /// PRs another copy of Warden is reviewing right now.
+    pub claimed: Vec<Claimed>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Claimed {
+    pub pr: PrInfo,
+    pub by: String,
+}
+
+/// The marker a copy of Warden leaves on a pull request (as a hidden
+/// property) so other copies do not review the same commit.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Claim {
+    /// Which installation wrote it.
+    pub instance: String,
+    /// Who that installation runs as, for display.
+    pub by: String,
+    /// reviewing | reviewed | released
+    pub state: String,
+    pub commit: String,
+    pub at: DateTime<Utc>,
+    /// approved | rejected, once reviewed.
+    #[serde(default)]
+    pub decision: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -178,5 +203,7 @@ pub struct Tracked {
 pub struct Tracking {
     /// Whether the "already open" PRs have been dealt with.
     pub baselined: bool,
+    /// Identifies this installation to other copies of Warden.
+    pub instance: String,
     pub prs: BTreeMap<u64, Tracked>,
 }

@@ -99,6 +99,7 @@ export interface Live {
   error: string | null;
   current: Current | null;
   queue: PrInfo[];
+  claimed: { pr: PrInfo; by: string }[];
 }
 
 export interface Connection {

@@ -93,7 +93,7 @@ function live(): Live {
     const failing = location.search.includes("error");
     return {
       status: !settings.setupComplete ? "setup" : settings.paused ? "paused" : failing ? "error" : "idle",
-      lastCheck, checking, queue: [], current: null,
+      lastCheck, checking, queue: [], claimed: [], current: null,
       error: failing ? "Azure DevOps rejected the Personal Access Token (HTTP 401). It is invalid or expired." : null,
     };
   }
@@ -102,6 +102,7 @@ function live(): Live {
   return {
     status: !settings.setupComplete ? "setup" : done ? (settings.paused ? "paused" : "idle") : "reviewing",
     lastCheck, checking, error: null,
+    claimed: [{ pr: pr(4822, "Tighten refund audit logging", "Payments", "payments-api", "Tom Okafor", "feature/refund-audit"), by: "Alex Morgan" }],
     queue: [pr(2293, "Add skeleton loaders to account page", "Customer Web", "web-portal", "Aisha Rahman", "feature/account-skeletons")],
     current: {
       pr: live4821, step: done ? 6 : shown[shown.length - 1]?.[0] ?? 0, startedAt, done,

@@ -8,6 +8,8 @@ use serde_json::{json, Value};
 pub const API_VERSION: &str = "7.1";
 // connectionData is only published as a preview resource.
 const CONNECTION_API_VERSION: &str = "7.1-preview";
+// Pull request properties are only published as a preview resource.
+const PROPERTIES_API_VERSION: &str = "7.1-preview.1";
 const DEFAULT_BASE_URL: &str = "https://dev.azure.com";
 const ANONYMOUS_ID: &str = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 
@@ -475,6 +477,47 @@ impl AdoClient {
                 }
             })
             .collect())
+    }
+
+    fn properties_url(&self, repo_id: &str, pr_id: u64) -> String {
+        format!("{}/properties", self.pr_url(repo_id, pr_id))
+    }
+
+    /// Hidden key/value metadata attached to a pull request. Tools use it to
+    /// coordinate; it is not shown in the Azure DevOps UI.
+    pub async fn pr_properties(&self, repo_id: &str, pr_id: u64) -> Result<std::collections::BTreeMap<String, String>> {
+        #[derive(Deserialize)]
+        struct Properties {
+            #[serde(default)]
+            value: serde_json::Map<String, Value>,
+        }
+        let props: Properties = self
+            .send(
+                self.http
+                    .get(self.properties_url(repo_id, pr_id))
+                    .query(&[("api-version", PROPERTIES_API_VERSION)]),
+            )
+            .await?;
+        Ok(props
+            .value
+            .into_iter()
+            .filter_map(|(key, v)| Some((key, v.get("$value")?.as_str()?.to_string())))
+            .collect())
+    }
+
+    /// Sets (adds or replaces) one hidden property on a pull request.
+    pub async fn set_pr_property(&self, repo_id: &str, pr_id: u64, key: &str, value: &str) -> Result<()> {
+        let patch = json!([{ "op": "add", "path": format!("/{key}"), "value": value }]);
+        let _: Value = self
+            .send(
+                self.http
+                    .patch(self.properties_url(repo_id, pr_id))
+                    .query(&[("api-version", PROPERTIES_API_VERSION)])
+                    .header("Content-Type", "application/json-patch+json")
+                    .body(patch.to_string()),
+            )
+            .await?;
+        Ok(())
     }
 
     pub fn pr_url(&self, repo_id: &str, pr_id: u64) -> String {
