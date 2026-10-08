@@ -78,11 +78,11 @@ fn home() -> Result<PathBuf> {
 }
 
 pub fn config_path() -> Result<PathBuf> {
-    Ok(home()?.join(".config/prr/config.toml"))
+    Ok(home()?.join(".config").join("prr").join("config.toml"))
 }
 
 pub fn cache_dir() -> Result<PathBuf> {
-    Ok(home()?.join(".cache/prr"))
+    Ok(home()?.join(".cache").join("prr"))
 }
 
 pub fn expand_tilde(path: &str) -> PathBuf {

@@ -128,6 +128,11 @@ pub fn fetch(repo: &Path, source: &str, target: &str, auth: Option<&GitAuth>) ->
     Ok(())
 }
 
+/// Windows limits paths to 260 characters unless git is told otherwise, and
+/// deep project trees inside the cache directory exceed that ("Filename too
+/// long" on checkout). The setting has no effect on other systems.
+const LONG_PATHS: (&str, &str) = ("core.longpaths", "true");
+
 /// Brings prr's own clone at `dir` up to date and checks out the PR's source
 /// branch (detached), cloning from `url` first if needed. `dir` is owned by
 /// prr, so unlike a user's clone its working tree is ours to change.
@@ -146,6 +151,9 @@ pub fn sync_managed_clone(
     if !dir.exists() {
         clone(url, dir, auth)?;
     }
+    // Clones made before long paths were enabled need it switched on too.
+    // Only ever done to prr's own clone, never to a user's.
+    let _ = git(dir).args(["config", LONG_PATHS.0, LONG_PATHS.1]).output();
     fetch(dir, source, target, auth)?;
 
     let out = git(dir)
@@ -178,7 +186,10 @@ fn clone(url: &str, dir: &Path, auth: Option<&GitAuth>) -> Result<()> {
     }
 
     let mut cmd = Command::new("git");
-    cmd.args(["clone", "--no-checkout", "--quiet", url]).arg(&partial);
+    cmd.args(["clone", "--no-checkout", "--quiet", "-c"])
+        .arg(format!("{}={}", LONG_PATHS.0, LONG_PATHS.1))
+        .arg(url)
+        .arg(&partial);
     if let Some(auth) = auth {
         auth.apply(&mut cmd);
     }

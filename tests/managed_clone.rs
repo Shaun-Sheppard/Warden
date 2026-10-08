@@ -40,11 +40,17 @@ fn clones_then_updates_and_checks_out_the_pr_branch() {
     assert_eq!(std::fs::read_to_string(clone.join("new.txt")).unwrap(), "v1");
     assert_eq!(git(&clone, &["diff", "--name-only", "origin/main...origin/feature/x"]), "new.txt");
     assert!(!tmp.path().join("cache/repos/repo-id.partial").exists());
+    // Needed on Windows, where deep trees exceed the default path limit.
+    assert_eq!(git(&clone, &["config", "core.longpaths"]), "true");
+
+    // A clone made by an older version gets the setting on its next use.
+    git(&clone, &["config", "--unset", "core.longpaths"]);
 
     // A later review picks up new commits on the PR branch.
     commit(&origin, "new.txt", "v2");
     sync_managed_clone(url, &clone, "feature/x", "main", None).unwrap();
     assert_eq!(std::fs::read_to_string(clone.join("new.txt")).unwrap(), "v2");
+    assert_eq!(git(&clone, &["config", "core.longpaths"]), "true");
     assert_eq!(
         git(&clone, &["rev-parse", "HEAD"]),
         git(&origin, &["rev-parse", "feature/x"])
