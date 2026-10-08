@@ -328,6 +328,17 @@ impl Engine {
         self.emit_live();
     }
 
+    /// Marks a step of the review in progress as failed or skipped.
+    fn mark_step(&self, step: u8, failed: bool) {
+        let mut shared = self.shared.lock().unwrap();
+        if let Some(current) = shared.live.current.as_mut() {
+            let list = if failed { &mut current.failed } else { &mut current.skipped };
+            if !list.contains(&step) {
+                list.push(step);
+            }
+        }
+    }
+
     fn track(&self, pr_id: u64, tracked: Tracked) {
         let mut shared = self.shared.lock().unwrap();
         shared.tracking.prs.insert(pr_id, tracked);
@@ -575,6 +586,8 @@ impl Engine {
                 )],
                 done: false,
                 record_id: None,
+                failed: Vec::new(),
+                skipped: Vec::new(),
             });
         }
         self.emit_live();
@@ -700,6 +713,7 @@ impl Engine {
 
                 self.set_step(4);
                 if settings.dry_run {
+                    self.mark_step(4, false);
                     self.log("dim", "Dry run · comment not posted");
                 } else {
                     match flow::post_all(&client, &run.pr, vec![comment]).await.pop().map(|r| r.result) {
@@ -708,6 +722,7 @@ impl Engine {
                             self.log("info", format!("Comment posted · mentioned {}", info.author));
                         }
                         Some(Err(e)) => {
+                            self.mark_step(4, true);
                             self.log("warn", format!("Could not post the comment: {e:#}"));
                             problems.push(format!("Comment not posted: {e:#}"));
                         }
@@ -717,8 +732,10 @@ impl Engine {
 
                 self.set_step(5);
                 if settings.dry_run {
+                    self.mark_step(5, false);
                     self.log("dim", "Dry run · no vote cast");
                 } else if !settings.approve_and_complete {
+                    self.mark_step(5, false);
                     self.log("warn", "No vote cast · \"Vote, and auto-complete clean PRs\" is turned off in Settings");
                 } else {
                     match self.vote(org, &client, settings, &record.pr, vote).await {
@@ -728,6 +745,7 @@ impl Engine {
                             self.log(if auto_complete { "ok" } else { "warn" }, message);
                         }
                         Err(e) => {
+                            self.mark_step(5, true);
                             self.log("warn", format!("Could not vote: {e:#}"));
                             problems.push(format!("Vote not cast: {e:#}"));
                         }
@@ -759,7 +777,13 @@ impl Engine {
             let mut shared = self.shared.lock().unwrap();
             if let Some(current) = shared.live.current.as_mut() {
                 current.done = true;
-                current.step = 6;
+                if record.status == Outcome::Failed {
+                    // Stop the bar where the review broke; later steps never ran.
+                    let step = current.step;
+                    current.failed.push(step);
+                } else {
+                    current.step = 6;
+                }
                 current.record_id = Some(record.record_id.clone());
                 record.lines = current.lines.clone();
             }

@@ -150,6 +150,12 @@ pub struct Current {
     pub lines: Vec<LogLine>,
     pub done: bool,
     pub record_id: Option<String>,
+    /// Steps that went wrong (shown red).
+    #[serde(default)]
+    pub failed: Vec<u8>,
+    /// Steps deliberately not carried out, e.g. in a dry run (shown grey).
+    #[serde(default)]
+    pub skipped: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

@@ -91,6 +91,8 @@ export interface Current {
   lines: LogLine[];
   done: boolean;
   recordId: string | null;
+  failed: number[];
+  skipped: number[];
 }
 
 export interface Live {

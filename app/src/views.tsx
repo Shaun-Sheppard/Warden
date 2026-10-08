@@ -59,8 +59,8 @@ export function Activity({ live, history, settings, now, onOpen, onHistory }: {
             <>
               <div className="live-head">
                 <div className="live-label mono">
-                  <span className={current.done ? "tone-muted" : ""} style={current.done ? undefined : { color: "var(--accent-fg)" }}>
-                    {current.done ? "Review complete" : "Reviewing now"}
+                  <span className={!current.done ? "" : current.failed.length ? "tone-critical" : "tone-muted"} style={current.done ? undefined : { color: "var(--accent-fg)" }}>
+                    {!current.done ? "Reviewing now" : result?.status === "failed" ? "Review failed" : current.failed.length ? "Review complete, with problems" : "Review complete"}
                   </span>
                   <span className="tone-faint">{clock(elapsed)}</span>
                 </div>
@@ -72,11 +72,18 @@ export function Activity({ live, history, settings, now, onOpen, onHistory }: {
                   </div>
                 </div>
                 <div className="steps">
-                  {STEPS.map((label, k) => (
-                    <div key={label} className={`step ${k < current.step ? "done" : k === current.step ? "now" : ""}`}>
-                      <div className="bar" /><span className="ellipsis">{label}</span>
-                    </div>
-                  ))}
+                  {STEPS.map((label, k) => {
+                    const state = current.failed.includes(k) ? "failed"
+                      : current.skipped.includes(k) ? "skipped"
+                      : k < current.step ? "done"
+                      : k === current.step && !current.done ? "now" : "";
+                    const note = state === "failed" ? " (failed)" : state === "skipped" ? " (skipped)" : "";
+                    return (
+                      <div key={label} className={`step ${state}`} title={`${label}${note}`}>
+                        <div className="bar" /><span className="ellipsis">{label}{state === "failed" ? " ✕" : ""}</span>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
               {result && (

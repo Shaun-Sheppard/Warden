@@ -97,7 +97,8 @@ function live(): Live {
       error: failing ? "Azure DevOps rejected the Personal Access Token (HTTP 401). It is invalid or expired." : null,
     };
   }
-  const shown = SCRIPT.slice(0, Math.min(tick, SCRIPT.length));
+  const stepFail = location.search.includes("stepfail");
+  const shown = SCRIPT.slice(0, Math.min(tick, stepFail ? 6 : SCRIPT.length));
   const done = tick > SCRIPT.length;
   return {
     status: !settings.setupComplete ? "setup" : done ? (settings.paused ? "paused" : "idle") : "reviewing",
@@ -105,7 +106,8 @@ function live(): Live {
     claimed: [{ pr: pr(4822, "Tighten refund audit logging", "Payments", "payments-api", "Tom Okafor", "feature/refund-audit"), by: "Alex Morgan" }],
     queue: [pr(2293, "Add skeleton loaders to account page", "Customer Web", "web-portal", "Aisha Rahman", "feature/account-skeletons")],
     current: {
-      pr: live4821, step: done ? 6 : shown[shown.length - 1]?.[0] ?? 0, startedAt, done,
+      pr: live4821, step: done ? (stepFail ? 2 : 6) : shown[shown.length - 1]?.[0] ?? 0, startedAt, done,
+      failed: done && stepFail ? [2] : [], skipped: done && location.search.includes("dry") ? [4, 5] : [],
       recordId: done ? "4821-live" : null,
       lines: shown.map(([, kind, text]) => ({ time: now(), kind, text })),
     },

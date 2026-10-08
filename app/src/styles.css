@@ -91,6 +91,9 @@ input::placeholder { color: var(--faint); }
 .step .bar { height: 3px; border-radius: 2px; background: var(--line); transition: background 0.3s; }
 .step.done { color: var(--text); } .step.done .bar { background: var(--ok); }
 .step.now { color: var(--accent-fg); } .step.now .bar { background: var(--accent); }
+.step.failed { color: var(--critical); } .step.failed .bar { background: var(--critical); }
+.step.skipped { color: var(--faint); text-decoration: line-through; }
+.step.skipped .bar { background: repeating-linear-gradient(90deg, var(--faint) 0 4px, transparent 4px 8px); }
 .result { margin: 0 20px 16px; padding: 12px 14px; border-radius: 8px; display: flex; align-items: center; gap: 12px; }
 .log { height: 360px; overflow: auto; background: var(--term); border-top: 1px solid var(--line); padding: 14px 20px; font-size: 12px; line-height: 1.85; }
 .log-line { display: flex; gap: 14px; }
