@@ -20,13 +20,14 @@ function UpdateBanner({ update, reviewing, onDismiss }: { update: AvailableUpdat
       .catch((e) => setState({ phase: "error", percent: null, error: String(e) }));
   };
   return (
-    <div className="banner tint-ok" role="status">
+    <div className="banner slim tint-ok" role="status">
       <b className="tone-ok">Warden {update.version} is available</b>
-      <span className="grow">
-        {state.phase === "installing" ? `Downloading${state.percent === null ? "…" : ` ${state.percent}%`} · Warden will restart when it is ready.`
-          : state.phase === "error" ? <span className="tone-critical selectable">Update failed: {state.error}</span>
-          : reviewing ? "A review is running. You can update once it has finished."
-          : update.notes || "Install it now; Warden restarts and carries on monitoring."}
+      {/* Deliberately no release notes: the bar only says an update exists. */}
+      <span className="grow ellipsis">
+        {state.phase === "installing" ? `Downloading${state.percent === null ? "…" : ` ${state.percent}%`}`
+          : state.phase === "error" ? <span className="tone-critical selectable" title={state.error}>Update failed: {state.error}</span>
+          : reviewing ? "Available once the current review finishes"
+          : ""}
       </span>
       {state.phase !== "installing" && (
         <>

@@ -73,6 +73,9 @@ input::placeholder { color: var(--faint); }
 .tint-critical { background: color-mix(in oklab, var(--critical) 14%, transparent); }
 .tint-major { background: color-mix(in oklab, var(--major) 14%, transparent); }
 .banner { margin: 16px 24px 0; padding: 12px 14px; border-radius: 8px; display: flex; gap: 12px; align-items: flex-start; line-height: 1.5; }
+.banner.slim { padding: 6px 12px; align-items: center; }
+.banner.slim .btn { height: 24px; }
+.banner.slim .grow { white-space: nowrap; }
 .banner .grow { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-word; }
 .avatar { border-radius: 50%; color: #fff; display: grid; place-items: center; font-weight: 600; flex: none; }
 .ellipsis { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
