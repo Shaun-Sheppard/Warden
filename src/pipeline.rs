@@ -221,6 +221,19 @@ pub async fn run_review(
         }
     };
 
+    // Warden's own scan, so blocking approval does not depend on Claude having flagged it.
+    let mut parsed = parsed;
+    if parsed.manipulation.is_none() {
+        let diff = std::fs::read_to_string(input_dir.join("diff.patch")).unwrap_or_default();
+        let added: Vec<&str> = diff.lines().filter(|l| l.starts_with('+')).collect();
+        let work_text: Vec<&str> = work_items
+            .iter()
+            .flat_map(|w| [w.title.as_str(), w.description.as_str(), w.acceptance_criteria.as_str()])
+            .collect();
+        let texts = [pr.title.as_str(), pr.description.as_deref().unwrap_or("")].into_iter().chain(added).chain(work_text);
+        parsed.manipulation = review::find_reviewer_directed_text(texts);
+    }
+
     stage("Saving review".to_string());
     let saved = SavedReview {
         pr_id: pr.pull_request_id,

@@ -185,7 +185,7 @@ export default function App() {
   const titles: Record<View, string> = { activity: "Activity", history: "Review history", detail: "Review", fixes: "Fixes", settings: "Settings" };
   const fixesWaiting = fixes.filter((f) => f.status === "ready").length;
   const fixInProgress = fixes.some((f) => f.status === "generating" || f.status === "pushing");
-  const claudeProblem = claude && (!claude.found || !claude.signedIn);
+  const claudeProblem = claude && (!claude.found || !claude.supported || !claude.signedIn);
 
   return (
     <div className="app">
@@ -226,7 +226,7 @@ export default function App() {
         <div className="side-foot mono">
           <div className="inline" style={{ gap: 6 }}><i className="dot" style={{ width: 6, height: 6, background: live.status === "error" ? "var(--critical)" : "var(--ok)" }} />{settings.organization}</div>
           <div className={claudeProblem ? "tone-critical" : ""}>
-            {!claude ? "claude …" : !claude.found ? "claude not found" : !claude.signedIn ? "claude not signed in" : `claude ${claude.version.split(" ")[0]}`}
+            {!claude ? "claude …" : !claude.found ? "claude not found" : !claude.supported ? "claude needs updating" : !claude.signedIn ? "claude not signed in" : `claude ${claude.version.split(" ")[0]}`}
           </div>
         </div>
       </aside>
@@ -259,8 +259,12 @@ export default function App() {
           {saveError && <div className="banner tint-critical" role="alert"><b className="tone-critical">Settings were not saved</b><span className="grow">{saveError}</span></div>}
           {claudeProblem && view !== "settings" && (
             <div className="banner tint-critical" role="alert">
-              <b className="tone-critical">Claude Code {claude.found ? "is not signed in" : "was not found"}</b>
-              <span className="grow">{claude.found ? "Reviews will fail until you run `claude auth login` in a terminal." : "Install the Claude Code CLI or set its path in Settings."}</span>
+              <b className="tone-critical">Claude Code {!claude.found ? "was not found" : !claude.supported ? "needs updating" : "is not signed in"}</b>
+              <span className="grow">
+                {!claude.found ? "Install the Claude Code CLI or set its path in Settings."
+                  : !claude.supported ? "This version cannot run reviews safely confined, so Warden will not use it. Run `claude update` in a terminal."
+                  : "Reviews will fail until you run `claude auth login` in a terminal."}
+              </span>
               <button className="btn" onClick={() => api.claudeStatus().then(setClaude)}>Check again</button>
             </div>
           )}

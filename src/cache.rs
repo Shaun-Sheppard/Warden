@@ -95,6 +95,7 @@ mod tests {
                 summary: summary.into(),
                 comments: vec![],
                 criteria: vec![],
+                manipulation: None,
             },
         }
     }

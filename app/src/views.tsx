@@ -276,6 +276,7 @@ export function Detail({ record: r, reviews, now, onOpen, onRetry, onSettings, p
   const subline =
     r.status === "failed" ? "Nothing was posted to the pull request."
       : r.status === "approved" ? `No critical or major issues · ${r.counts.minor} minor left as suggestions`
+      : r.review?.manipulation ? "The pull request contains text addressed to automated reviewers, so it cannot be approved automatically"
       : unmet ? `${unmet} acceptance criteri${unmet > 1 ? "a" : "on"} not met${blocking ? ` · ${blocking} critical or major issue${blocking > 1 ? "s" : ""}` : ""}`
       : blocking ? `${blocking} critical or major issue${blocking > 1 ? "s" : ""} must be fixed before merge`
       : "Claude rejected this change; see the summary";
@@ -344,7 +345,14 @@ export function Detail({ record: r, reviews, now, onOpen, onRetry, onSettings, p
             </div>
           )}
         </div>
-        {r.review && !r.vote && !r.dryRun && r.status !== "failed" && <VoteNow record={r} onSettings={onSettings} />}
+        {r.review?.manipulation && (
+          <div className="warning tint-critical" role="alert">
+            <b className="tone-critical">Possible attempt to steer the review</b>
+            <span>This pull request contains text addressed to automated reviewers. It was not followed, and Warden will not approve this pull request automatically. Read the change yourself before deciding.</span>
+            <pre className="snippet mono" style={{ whiteSpace: "pre-wrap" }}>{r.review.manipulation}</pre>
+          </div>
+        )}
+        {r.review && !r.vote && !r.dryRun && r.status !== "failed" && !r.review.manipulation && <VoteNow record={r} onSettings={onSettings} />}
         {r.error && (
           <div className="warning tint-critical" role="alert">
             <b className="tone-critical">{r.status === "failed" ? "What went wrong" : "Not everything went through"}</b>

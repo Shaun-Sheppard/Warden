@@ -203,6 +203,12 @@ pub async fn post_flow(
 /// which posts without asking.
 pub fn single_comment(review: &Review, lead: &Lead) -> Outgoing {
     let mut text = summary_body(review);
+    if let Some(quote) = &review.manipulation {
+        text.push_str(&format!(
+            "\n\n**⚠️ This pull request contains text addressed to automated reviewers.** It was not followed, and it prevents automatic approval:\n\n> {}",
+            quote.replace('\n', " ")
+        ));
+    }
     if !review.criteria.is_empty() {
         text.push_str(&format!(
             "\n\n**Acceptance criteria ({} of {} met)**\n",

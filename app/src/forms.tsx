@@ -125,16 +125,20 @@ export function ClaudeCheck({ status, onRecheck }: { status: ClaudeStatus | null
           {status.found && (
             <>
               <div className="tone-muted">$ claude --version</div>
-              <div className={status.signedIn ? "tone-ok" : "tone-critical"}>{status.version || "unknown"} · {status.signedIn ? "signed in" : "not signed in"}</div>
+              <div className={status.signedIn && status.supported ? "tone-ok" : "tone-critical"}>
+                {status.version || "unknown"} · {!status.supported ? "too old, needs updating" : status.signedIn ? "signed in" : "not signed in"}
+              </div>
             </>
           )}
           {!status.gitFound && <div className="tone-critical">git was not found</div>}
         </>
       )}
-      {status && (!status.found || !status.signedIn || !status.gitFound) && (
+      {status && (!status.found || !status.supported || !status.signedIn || !status.gitFound) && (
         <div style={{ marginTop: 8, fontFamily: "inherit" }}>
           <span className="tone-muted">
-            {!status.found ? "Install the Claude Code CLI, or set its path in Settings." : !status.signedIn ? "Run `claude auth login` in a terminal." : "Install git."}{" "}
+            {!status.found ? "Install the Claude Code CLI, or set its path in Settings."
+              : !status.supported ? "Run `claude update` in a terminal. Warden needs a version that can run reviews safely confined."
+              : !status.signedIn ? "Run `claude auth login` in a terminal." : "Install git."}{" "}
           </span>
           <button className="link" onClick={onRecheck}>Check again</button>
         </div>
@@ -328,7 +332,7 @@ export function Setup({ settings, change, onFinish }: { settings: Settings; chan
   const [projectChoices, setProjectChoices] = useState<string[]>([]);
   const [claude, recheck] = useClaudeStatus("setup");
   const labels = ["Connect", "Scope", "Claude Code"];
-  const ready = step === 0 ? connected : step === 2 ? !!claude?.found && claude.signedIn && claude.gitFound : true;
+  const ready = step === 0 ? connected : step === 2 ? !!claude?.found && claude.supported && claude.signedIn && claude.gitFound : true;
 
   return (
     <div className="setup">
@@ -362,7 +366,7 @@ export function Setup({ settings, change, onFinish }: { settings: Settings; chan
           <div className="setup-foot">
             <button className="btn ghost" style={{ visibility: step > 0 ? "visible" : "hidden" }} onClick={() => setStep(step - 1)}>Back</button>
             <div className="inline">
-              {!ready && <span className="help">{step === 0 ? "Test the connection to continue" : "Claude Code must be installed and signed in"}</span>}
+              {!ready && <span className="help">{step === 0 ? "Test the connection to continue" : "Claude Code must be installed, up to date and signed in"}</span>}
               <button className="btn primary" disabled={!ready} onClick={() => (step < 2 ? setStep(step + 1) : onFinish())}>
                 {step < 2 ? "Continue" : "Start monitoring"}
               </button>

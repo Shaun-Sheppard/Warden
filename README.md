@@ -80,7 +80,9 @@ A pull request is untrusted input: its code, description, linked work items and 
 
 This relies on the Claude Code CLI's `--restricted`, `--safe-mode` and `--strict-mcp-config` options. An older CLI without them is refused with a message to update, so a review never runs unconfined.
 
-Confinement limits what a manipulated review can *do*; it cannot guarantee the *verdict* is right. The prompt tells Claude to treat instructions found in a pull request as a critical issue, which blocks approval, but automatic approval of other people's pull requests remains a matter of trust in the review.
+Confinement limits what a manipulated review can *do*; it cannot guarantee the *verdict* is right. Two things guard the verdict: Claude is told to report any text addressed to the reviewer, and Warden scans the change, description and work items for such text itself. Either one blocks automatic approval, marks the review, and says so in the posted comment. Neither is proof against a carefully worded pull request, so automatic approval of other people's pull requests remains a matter of trust.
+
+Other protections: the Azure DevOps token is offered by git only to `dev.azure.com`; the app window runs under a content security policy; and Warden shows up front when the installed Claude Code is too old to be confined.
 
 `tests/live_claude.rs` runs a real review against a hostile repository (a command hook, plus instructions to read and write outside the repository and approve) and checks that none of it works: `cargo test --test live_claude -- --ignored`.
 

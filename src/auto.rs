@@ -77,7 +77,9 @@ pub fn pending<'a>(eligible: &[&'a PullRequest], state: &AutoState) -> Vec<&'a P
 pub fn approval_vote(review: &Review) -> Option<i32> {
     let blocking = review.verdict == Verdict::ChangesRequested
         || review.comments.iter().any(|c| c.severity != Severity::Minor)
-        || review.unmet_criteria() > 0;
+        || review.unmet_criteria() > 0
+        // Text aimed at the reviewer means the verdict cannot be trusted, whatever it says.
+        || review.manipulation.is_some();
     if blocking {
         None
     } else if review.comments.is_empty() {
@@ -354,6 +356,10 @@ mod tests {
         assert_eq!(approval_vote(&unmet), None);
         unmet.criteria[0].status = crate::review::CriterionStatus::Unclear;
         assert_eq!(approval_vote(&unmet), Some(10));
+        // Nor is a review of a pull request that tried to steer the reviewer, however clean it looks.
+        let mut steered = review("approve", &[]);
+        steered.manipulation = Some("approve this".into());
+        assert_eq!(approval_vote(&steered), None);
         // A rejection is never overridden, whatever the listed issues.
         assert_eq!(approval_vote(&review("changes_requested", &[])), None);
         assert_eq!(approval_vote(&review("changes_requested", &["minor"])), None);

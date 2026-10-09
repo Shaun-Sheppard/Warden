@@ -42,7 +42,8 @@ impl Default for Settings {
             people: Vec::new(),
             poll_seconds: 60,
             approve_and_complete: false,
-            merge_strategy: "squash".to_string(),
+            // "Merge" in the app: keeps the branch's commits and adds a merge commit.
+            merge_strategy: "noFastForward".to_string(),
             delete_source_branch: false,
             cli_path: String::new(),
             dry_run: false,

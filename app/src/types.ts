@@ -21,6 +21,7 @@ export interface Review {
   summary: string;
   comments: Issue[];
   criteria: Criterion[];
+  manipulation: string | null;
 }
 
 export interface Settings {
@@ -134,6 +135,7 @@ export interface ClaudeStatus {
   path: string;
   version: string;
   signedIn: boolean;
+  supported: boolean;
   gitFound: boolean;
 }
 

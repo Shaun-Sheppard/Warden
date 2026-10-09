@@ -76,6 +76,11 @@ fn prefer_cli(cli_path: &str) {
 
 #[tauri::command]
 fn get_settings(engine: Shared) -> Settings {
+    // Lets a packaged build be checked from a terminal: this line proves the
+    // window's scripts loaded and can reach the app under its security policy.
+    if std::env::var_os("WARDEN_TRACE").is_some() {
+        eprintln!("warden: the window requested settings");
+    }
     engine.settings()
 }
 
@@ -204,6 +209,8 @@ struct ClaudeStatus {
     path: String,
     version: String,
     signed_in: bool,
+    /// Recent enough to run reviews confined (has `--restricted`).
+    supported: bool,
     git_found: bool,
 }
 
@@ -222,6 +229,7 @@ fn claude_status() -> ClaudeStatus {
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
     };
     status.version = run(&["--version"]).unwrap_or_default();
+    status.supported = run(&["--help"]).is_some_and(|help| help.contains("--restricted"));
     status.signed_in = run(&["auth", "status"])
         .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
         .and_then(|v| v["loggedIn"].as_bool())

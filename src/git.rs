@@ -17,8 +17,10 @@ impl GitAuth {
     }
 
     fn apply(&self, cmd: &mut Command) {
+        // Scoped to Azure DevOps, so the token is not sent to any other host
+        // git might contact (a redirect, an LFS server, a submodule).
         cmd.env("GIT_CONFIG_COUNT", "1")
-            .env("GIT_CONFIG_KEY_0", "http.extraHeader")
+            .env("GIT_CONFIG_KEY_0", "http.https://dev.azure.com/.extraHeader")
             .env("GIT_CONFIG_VALUE_0", &self.header)
             .env("GIT_TERMINAL_PROMPT", "0");
     }
@@ -397,6 +399,20 @@ mod tests {
                 "+refs/heads/main:refs/remotes/origin/main",
             ]
         );
+    }
+
+    #[test]
+    fn the_token_is_only_offered_to_azure_devops() {
+        let mut cmd = Command::new("git");
+        GitAuth::from_pat("secret").apply(&mut cmd);
+        let envs: std::collections::HashMap<_, _> = cmd
+            .get_envs()
+            .filter_map(|(k, v)| Some((k.to_str()?.to_string(), v?.to_str()?.to_string())))
+            .collect();
+        assert_eq!(envs["GIT_CONFIG_KEY_0"], "http.https://dev.azure.com/.extraHeader");
+        assert!(envs["GIT_CONFIG_VALUE_0"].starts_with("Authorization: Basic "));
+        assert!(!envs["GIT_CONFIG_VALUE_0"].contains("secret"), "sent encoded, never in the clear");
+        assert_eq!(envs["GIT_CONFIG_COUNT"], "1");
     }
 
     #[test]

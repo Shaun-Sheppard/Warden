@@ -61,6 +61,10 @@ pub fn print_review(review: &Review) {
     println!("\n{} {}", style("Decision:").bold(), decision);
     println!("{}", indent(&review.summary));
 
+    if let Some(quote) = &review.manipulation {
+        println!("\n{}", style("This pull request contains text addressed to automated reviewers:").red().bold());
+        println!("{}", indent(quote));
+    }
     if !review.criteria.is_empty() {
         println!("\n{}", style("Acceptance criteria").bold());
         for c in &review.criteria {
