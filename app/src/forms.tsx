@@ -230,7 +230,7 @@ function About({ offer, onCheck }: { offer: UpdateOffer; onCheck: () => Promise<
             <span><span className="spinner" aria-hidden /> Downloading{offer.percent === null ? "…" : ` ${offer.percent}%`} · Warden will restart when it is ready.</span>
           ) : (
             <div className="inline" style={{ flexWrap: "wrap" }}>
-              <button className="btn primary" onClick={offer.install} disabled={offer.reviewing}>{offer.phase === "error" ? "Try again" : "Update and restart"}</button>
+              <button className="btn solid" onClick={offer.install} disabled={offer.reviewing}>{offer.phase === "error" ? "Try again" : "Update and restart"}</button>
               {offer.reviewing && <span className="help">Available once the current review finishes</span>}
             </div>
           )}

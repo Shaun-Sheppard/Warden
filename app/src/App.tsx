@@ -28,7 +28,7 @@ function UpdateBanner({ offer, onDismiss }: { offer: UpdateOffer; onDismiss: () 
       </span>
       {offer.phase !== "installing" && (
         <>
-          <button className="btn primary" onClick={offer.install} disabled={offer.reviewing}>{offer.phase === "error" ? "Try again" : "Update and restart"}</button>
+          <button className="btn solid" onClick={offer.install} disabled={offer.reviewing}>{offer.phase === "error" ? "Try again" : "Update and restart"}</button>
           <button className="btn ghost" onClick={onDismiss}>Later</button>
         </>
       )}
