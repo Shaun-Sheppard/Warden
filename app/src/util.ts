@@ -17,7 +17,7 @@ export function initials(name: string): string {
 export function avatarColor(name: string): string {
   let hash = 0;
   for (const ch of name) hash = (hash * 31 + ch.charCodeAt(0)) % 360;
-  return `oklch(0.5 0.1 ${hash})`;
+  return `linear-gradient(135deg, oklch(0.66 0.13 ${hash}), oklch(0.5 0.14 ${hash + 35}))`;
 }
 
 export function ago(iso: string | null, now: number): string {

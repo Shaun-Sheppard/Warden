@@ -60,6 +60,7 @@ export default function App() {
   const [filter, setFilter] = useState<Filter>("all");
   const [project, setProject] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [period, setPeriod] = useState<"week" | "all">("week");
   const [now, setNow] = useState(Date.now());
   const [saveError, setSaveError] = useState<string | null>(null);
   const [update, setUpdate] = useState<AvailableUpdate | null>(null);
@@ -147,12 +148,20 @@ export default function App() {
   const record = history.find((r) => r.recordId === selected);
   const reviewing = live.status === "reviewing";
 
-  let rows = history;
-  if (filter !== "all") rows = rows.filter((r) => r.status === filter);
-  if (project) rows = rows.filter((r) => r.pr.project === project);
+  // History is one row per pull request: its latest review, with earlier
+  // reviews of the same PR reachable from the detail page.
+  const byPr = new Map<number, HistoryRecord[]>();
+  for (const r of history) byPr.set(r.pr.id, [...(byPr.get(r.pr.id) ?? []), r]);
+  const groups = [...byPr.values()].map((reviews) => ({ latest: reviews[0], count: reviews.length }));
+  // The sidebar counts, and the History list by default, cover the last 7 days.
+  const weekAgo = now - 7 * 24 * 60 * 60 * 1000;
+  const recent = groups.filter((g) => new Date(g.latest.finishedAt).getTime() >= weekAgo);
+  let rows = period === "week" ? recent : groups;
+  if (filter !== "all") rows = rows.filter((g) => g.latest.status === filter);
+  if (project) rows = rows.filter((g) => g.latest.pr.project === project);
   if (search) {
     const q = search.toLowerCase();
-    rows = rows.filter((r) => `${r.pr.title} ${r.pr.author} ${r.pr.repo} ${r.pr.project} ${r.pr.id}`.toLowerCase().includes(q));
+    rows = rows.filter(({ latest: r }) => `${r.pr.title} ${r.pr.author} ${r.pr.repo} ${r.pr.project} ${r.pr.id}`.toLowerCase().includes(q));
   }
 
   const projects = settings.projects.length ? settings.projects : [...new Set(history.map((r) => r.pr.project))].sort();
@@ -165,7 +174,7 @@ export default function App() {
     <div className="app">
       <aside className="sidebar">
         <div className="drag" data-tauri-drag-region />
-        <div className="status-card">
+        <div className="status-card" style={{ "--status": statusColor } as React.CSSProperties}>
           <div className="status-title"><i className={`dot ${live.status === "idle" || reviewing ? "pulse" : ""}`} style={{ background: statusColor }} />{statusText}</div>
           <div className="status-sub mono">
             {settings.projects.length || "All"} projects · {settings.people.length ? `${settings.people.length} people` : "everyone"}<br />
@@ -174,21 +183,21 @@ export default function App() {
         </div>
         <nav className="nav" aria-label="Main">
           <button className={`nav-item ${view === "activity" ? "on" : ""}`} onClick={() => setView("activity")}>
-            <span className="glyph" style={{ borderRadius: "50%" }} /><span className="grow">Activity</span>
+            <svg className="glyph" viewBox="0 0 16 16" aria-hidden><path d="M1.75 8h2.5l1.75-4.5 4 9 1.75-4.5h2.5" /></svg><span className="grow">Activity</span>
             {reviewing && <span className="badge mono">1</span>}
           </button>
           <button className={`nav-item ${view === "history" || view === "detail" ? "on" : ""}`} onClick={() => { setProject(null); setView("history"); }}>
-            <span className="glyph" style={{ borderRadius: 2 }} /><span className="grow">History</span><span className="count mono">{history.length}</span>
+            <svg className="glyph" viewBox="0 0 16 16" aria-hidden><circle cx="8" cy="8" r="6.25" /><path d="M8 4.75V8l2.25 1.5" /></svg><span className="grow">History</span><span className="count mono" title="Pull requests reviewed in the last 7 days">{recent.length}</span>
           </button>
           <button className={`nav-item ${view === "settings" ? "on" : ""}`} onClick={() => setView("settings")}>
-            <span className="glyph" style={{ transform: "rotate(45deg)" }} /><span className="grow">Settings</span>
+            <svg className="glyph" viewBox="0 0 16 16" aria-hidden><circle cx="8" cy="8" r="2" /><path d="M8 1.75v1.5M8 12.75v1.5M1.75 8h1.5M12.75 8h1.5M3.6 3.6l1.05 1.05M11.35 11.35l1.05 1.05M3.6 12.4l1.05-1.05M11.35 4.65l1.05-1.05" /><circle cx="8" cy="8" r="4.25" /></svg><span className="grow">Settings</span>
           </button>
         </nav>
         {projects.length > 0 && <div className="section-label mono">Projects</div>}
         <div className="nav" style={{ overflow: "auto" }}>
           {projects.map((p) => (
             <button key={p} className={`project ${view === "history" && project === p ? "on" : ""}`} onClick={() => { setProject(p); setView("history"); }}>
-              <span className="ellipsis">{p}</span><span className="count mono">{history.filter((r) => r.pr.project === p).length}</span>
+              <span className="ellipsis">{p}</span><span className="count mono" title="Pull requests reviewed in the last 7 days">{recent.filter((g) => g.latest.pr.project === p).length}</span>
             </button>
           ))}
         </div>
@@ -208,6 +217,8 @@ export default function App() {
           {view === "history" && (
             <>
               {project && <button className="chip" onClick={() => setProject(null)} aria-label={`Clear project filter ${project}`}>{project} ×</button>}
+              <Segmented label="Period" value={period} onChange={setPeriod}
+                options={[{ value: "week", label: "7 days" }, { value: "all", label: "90 days" }]} />
               <Segmented label="Filter by decision" value={filter} onChange={setFilter}
                 options={[{ value: "all", label: "All" }, { value: "approved", label: "Approved" }, { value: "rejected", label: "Rejected" }, { value: "failed", label: "Failed" }]} />
               <input className="search" placeholder="Search PRs, people, repos" aria-label="Search reviews" value={search} onChange={(e) => setSearch(e.target.value)} />
@@ -231,9 +242,10 @@ export default function App() {
             </div>
           )}
           {view === "activity" && <Activity live={live} history={history} settings={settings} now={now} onOpen={open} onHistory={() => setView("history")} />}
-          {view === "history" && <History rows={rows} now={now} onOpen={open} />}
+          {view === "history" && <History rows={rows} now={now} onOpen={open}
+            emptyHint={period === "week" && groups.length > recent.length ? "No reviews match in the last 7 days. Switch to \"90 days\" to see older ones." : "No reviews match."} />}
           {view === "detail" && (record
-            ? <Detail record={record} onRetry={() => api.retryReview(record.pr.id).then(() => setView("activity"))} onSettings={() => setView("settings")} />
+            ? <Detail record={record} reviews={byPr.get(record.pr.id) ?? [record]} now={now} onOpen={open} onRetry={() => api.retryReview(record.pr.id).then(() => setView("activity"))} onSettings={() => setView("settings")} />
             : <div className="empty">This review is no longer in the history.</div>)}
           {view === "settings" && <SettingsView settings={settings} change={change} onRunSetup={() => change({ setupComplete: false })} onUpdateFound={lookForUpdate} />}
         </div>

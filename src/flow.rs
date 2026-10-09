@@ -35,6 +35,9 @@ pub struct Outgoing {
     pub line: Option<u32>,
     /// Final content, including the marker prefix.
     pub content: String,
+    /// Post the thread already closed. An open thread can hold up a merge
+    /// where branch policy requires every comment to be resolved.
+    pub closed: bool,
 }
 
 #[derive(Debug)]
@@ -131,6 +134,7 @@ pub fn select_comments(
                 file: comment.file.clone(),
                 line: comment.line,
                 content: comment_content(lead, comment, &body),
+                closed: false,
             }),
         }
     }
@@ -144,6 +148,7 @@ pub fn select_comments(
             file: None,
             line: None,
             content: lead.apply(&body),
+            closed: false,
         }),
     }
     Ok(Some(approved))
@@ -235,6 +240,7 @@ pub fn single_comment(review: &Review, lead: &Lead) -> Outgoing {
         file: None,
         line: None,
         content: lead.apply(&text),
+        closed: false,
     }
 }
 
@@ -242,7 +248,10 @@ pub fn single_comment(review: &Review, lead: &Lead) -> Outgoing {
 pub async fn post_all(client: &AdoClient, pr: &PullRequest, items: Vec<Outgoing>) -> Vec<PostResult> {
     let mut results = Vec::with_capacity(items.len());
     for item in items {
-        let body = thread_body(&item.content, item.file.as_deref(), item.line);
+        let mut body = thread_body(&item.content, item.file.as_deref(), item.line);
+        if item.closed {
+            body["status"] = serde_json::json!("closed");
+        }
         let result = client
             .post_thread(&pr.repository.id, pr.pull_request_id, &body)
             .await;

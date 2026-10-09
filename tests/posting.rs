@@ -523,3 +523,23 @@ async fn pull_request_properties_round_trip() {
     assert_eq!(found["Warden.Review"], "{\"state\":\"reviewing\"}");
     c.set_pr_property("repo-id", 7, "Warden.Review", "x").await.unwrap();
 }
+
+/// An approving review must not leave an open thread that blocks the merge.
+#[tokio::test]
+async fn approving_reviews_post_a_closed_thread() {
+    use prr::flow::{post_all, single_comment, Lead};
+
+    let server = MockServer::start().await;
+    mount_threads(&server, 2).await;
+    let pr = pr();
+    let lead = Lead::for_pr("", false, &pr);
+
+    let mut approved = single_comment(&review(), &lead);
+    approved.closed = true;
+    let rejected = single_comment(&review(), &lead);
+    post_all(&client(&server), &pr, vec![approved, rejected]).await;
+
+    let bodies = posted_bodies(&server).await;
+    assert_eq!(bodies[0]["status"], "closed");
+    assert_eq!(bodies[1]["status"], "active");
+}

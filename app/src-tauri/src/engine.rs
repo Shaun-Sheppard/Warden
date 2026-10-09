@@ -20,7 +20,15 @@ use crate::store::Store;
 
 /// A PR whose review keeps failing is left alone after this many attempts.
 pub const MAX_ATTEMPTS: u32 = 3;
-const MAX_HISTORY: usize = 200;
+const MAX_HISTORY: usize = 500;
+/// Reviews older than this are dropped from History.
+pub const HISTORY_DAYS: i64 = 90;
+
+fn prune_history(history: &mut Vec<Record>) {
+    let cutoff = Utc::now() - chrono::Duration::days(HISTORY_DAYS);
+    history.retain(|r| r.finished_at >= cutoff);
+    history.truncate(MAX_HISTORY);
+}
 const MAX_LINES: usize = 300;
 /// Hidden pull request property holding a copy's claim.
 const CLAIM_KEY: &str = "Warden.Review";
@@ -215,10 +223,12 @@ impl Engine {
             tracking.instance = format!("{:x}-{:x}", std::process::id(), nanos);
             let _ = store.save_tracking(&tracking);
         }
+        let mut history = store.history();
+        prune_history(&mut history);
         let shared = Shared {
             settings: store.settings(),
             live: Live::default(),
-            history: store.history(),
+            history,
             tracking,
         };
         Self {
@@ -701,7 +711,10 @@ impl Engine {
                 );
 
                 let lead = Lead::for_pr(&config.review.comment_prefix, settings.mention_author, &run.pr);
-                let comment = flow::single_comment(&review, &lead);
+                let mut comment = flow::single_comment(&review, &lead);
+                // An approval leaves nothing for the author to resolve, and an open
+                // thread would block auto-complete under a "resolve all comments" policy.
+                comment.closed = vote.is_some();
                 record.comment = Some(comment.content.clone());
                 let mut problems = Vec::new();
                 problems.extend(run.work_items_note.clone());
@@ -789,7 +802,7 @@ impl Engine {
             }
             notice = finished_notice(&record);
             shared.history.insert(0, record);
-            shared.history.truncate(MAX_HISTORY);
+            prune_history(&mut shared.history);
             if let Err(e) = self.store.save_history(&shared.history) {
                 eprintln!("warden: {e:#}");
             }

@@ -28,6 +28,9 @@ function record(p: PrInfo, mins: number, secs: number, review: Review, extra: Pa
 const live4821 = pr(4821, "Add idempotency keys to refund endpoint", "Payments", "payments-api", "Priya Nair", "feature/refund-idempotency");
 
 let history: HistoryRecord[] = [
+  record(pr(4817, "Migrate invoice PDF rendering to worker queue", "Payments", "payments-api", "Tom Okafor", "feature/invoice-worker"), 3, 140, {
+    verdict: "approve", summary: "Both blocking issues from the previous review are fixed. Nothing else stands out.", comments: [], criteria: [],
+  }),
   record(pr(4817, "Migrate invoice PDF rendering to worker queue", "Payments", "payments-api", "Tom Okafor", "feature/invoice-worker"), 14, 221, {
     verdict: "changes_requested",
     summary: "Moves PDF generation into a background queue. Failed jobs are silently dropped and tenant branding is cached without isolation.",

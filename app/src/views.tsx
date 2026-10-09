@@ -167,14 +167,16 @@ export function Activity({ live, history, settings, now, onOpen, onHistory }: {
   );
 }
 
-export function History({ rows, now, onOpen }: { rows: HistoryRecord[]; now: number; onOpen: (recordId: string) => void }) {
+export function History({ rows, now, onOpen, emptyHint }: {
+  rows: { latest: HistoryRecord; count: number }[]; now: number; onOpen: (recordId: string) => void; emptyHint: string;
+}) {
   return (
     <div>
       <div className="history-head section-label mono">
         <span>Decision</span><span>Pull request</span><span>Raised by</span><span>Issues</span><span style={{ textAlign: "right" }}>Reviewed</span>
       </div>
-      {rows.map((r) => (
-        <button className="history-row" key={r.recordId} onClick={() => onOpen(r.recordId)}>
+      {rows.map(({ latest: r, count }) => (
+        <button className="history-row" key={r.pr.id} onClick={() => onOpen(r.recordId)}>
           <div className="stack">
             <span className={`pill tone-${tone(r)} tint-${tone(r)}`}>{decisionLabel(r)}</span>
             <span className="count">{outcomeLabel(r)}</span>
@@ -182,7 +184,7 @@ export function History({ rows, now, onOpen }: { rows: HistoryRecord[]; now: num
           <div className="stack">
             <span className="ellipsis" style={{ fontWeight: 500, maxWidth: "100%" }}>{r.pr.title}</span>
             <span className="count mono ellipsis" style={{ maxWidth: "100%" }}>
-              #{r.pr.id} · {r.pr.project}/{r.pr.repo}{r.stats ? ` · +${r.stats.additions} −${r.stats.deletions}` : ""}
+              #{r.pr.id} · {r.pr.project}/{r.pr.repo}{r.stats ? ` · +${r.stats.additions} −${r.stats.deletions}` : ""}{count > 1 ? ` · reviewed ${count} times` : ""}
             </span>
           </div>
           <div className="inline" style={{ gap: 8, minWidth: 0 }}><Avatar name={r.pr.author} /><span className="ellipsis">{r.pr.author}</span></div>
@@ -196,7 +198,7 @@ export function History({ rows, now, onOpen }: { rows: HistoryRecord[]; now: num
           <span className="meta mono" style={{ textAlign: "right" }}>{ago(r.finishedAt, now)}</span>
         </button>
       ))}
-      {rows.length === 0 && <div className="empty">No reviews match.</div>}
+      {rows.length === 0 && <div className="empty">{emptyHint}</div>}
     </div>
   );
 }
@@ -226,7 +228,9 @@ function VoteNow({ record: r, onSettings }: { record: HistoryRecord; onSettings:
   );
 }
 
-export function Detail({ record: r, onRetry, onSettings }: { record: HistoryRecord; onRetry: () => void; onSettings: () => void }) {
+export function Detail({ record: r, reviews, now, onOpen, onRetry, onSettings }: {
+  record: HistoryRecord; reviews: HistoryRecord[]; now: number; onOpen: (recordId: string) => void; onRetry: () => void; onSettings: () => void;
+}) {
   const t = tone(r);
   const first = r.pr.author.split(" ")[0];
   const blocking = r.counts.critical + r.counts.major;
@@ -338,7 +342,7 @@ export function Detail({ record: r, onRetry, onSettings }: { record: HistoryReco
             <div className="section-label mono">{r.posted ? "Comment posted to PR" : "Comment (not posted)"}</div>
             <div className="card" style={{ overflow: "hidden" }}>
               <div className="comment-head">
-                <span className="mono logo" style={{ width: 20, height: 20, fontSize: 10, borderWidth: 1.5, borderRadius: 5 }}>W</span>
+                <span className="mono logo" style={{ width: 20, height: 20, fontSize: 10, borderRadius: 6 }}>W</span>
                 <b>Warden</b><span className="tone-faint">via your token</span>
               </div>
               <div className="comment-text"><Markdown text={r.comment.replace(/@<[^>]+>/g, `@${r.pr.author}`)} /></div>
@@ -357,6 +361,23 @@ export function Detail({ record: r, onRetry, onSettings }: { record: HistoryReco
             ))}
           </div>
         </div>
+        {reviews.length > 1 && (
+          <div className="stack" style={{ gap: 8, alignItems: "stretch" }}>
+            <div className="section-label mono">Reviews of this pull request</div>
+            <div>
+              {reviews.map((other, i) => (
+                <button key={other.recordId} className="timeline-row" style={{ width: "100%" }} disabled={other.recordId === r.recordId}
+                  onClick={() => onOpen(other.recordId)} aria-current={other.recordId === r.recordId}>
+                  <i className="dot" style={{ width: 6, height: 6, background: `var(--${tone(other)})` }} />
+                  <span className="label" style={other.recordId === r.recordId ? { color: "var(--text)", fontWeight: 500 } : undefined}>
+                    {decisionLabel(other)}{i === 0 ? " · latest" : ""}{other.recordId === r.recordId ? " · shown" : ""}
+                  </span>
+                  <span className="mono tone-faint" style={{ fontSize: 11 }}>{other.pr.commit ? `${other.pr.commit.slice(0, 7)} · ` : ""}{ago(other.finishedAt, now)}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         {r.lines.length > 0 && (
           <details>
             <summary className="section-label mono" style={{ cursor: "pointer" }}>Review log</summary>
