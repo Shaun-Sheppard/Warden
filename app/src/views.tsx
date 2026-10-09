@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
-import type { HistoryRecord, Live, Settings } from "./types";
+import type { HistoryRecord, Live, Settings, Severity } from "./types";
 import { Avatar, CheckButton } from "./ui";
 import { SEVERITIES, STEPS, ago, clock, countsLabel, decisionLabel, duration, location, outcomeLabel } from "./util";
 
@@ -17,6 +17,12 @@ function Markdown({ text }: { text: string }) {
     </>
   );
 }
+
+const SEVERITY_NOTE: Record<Severity, string> = {
+  critical: "Must fix, blocks approval",
+  major: "Blocks approval",
+  minor: "Suggestion, doesn't block",
+};
 
 const tone = (r: HistoryRecord) => (r.status === "approved" ? "ok" : r.status === "rejected" ? "critical" : "major");
 
@@ -238,6 +244,29 @@ export function Detail({ record: r, reviews, now, onOpen, onRetry, onSettings }:
   const unmet = criteria.filter((c) => c.status === "not_met").length;
   const criterionTone = { met: "ok", not_met: "critical", unclear: "major" } as const;
   const criterionLabel = { met: "Met", not_met: "Not met", unclear: "Unclear" } as const;
+  const criterionGlyph = { met: "✓", not_met: "✕", unclear: "?" } as const;
+  const met = criteria.filter((c) => c.status === "met").length;
+  const unclear = criteria.filter((c) => c.status === "unclear").length;
+  const acTone = unmet ? "critical" : unclear ? "major" : "ok";
+  // Sections start open; the choice resets when another review is shown.
+  const [collapsed, setCollapsed] = useState<Partial<Record<Severity, boolean>>>({});
+  useEffect(() => setCollapsed({}), [r.recordId]);
+  const jump = (target: "ac" | Severity) => {
+    if (target !== "ac") setCollapsed((c) => ({ ...c, [target]: false }));
+    setTimeout(() => document.getElementById(`sec-${target}`)?.scrollIntoView({ behavior: "smooth", block: "start" }), 30);
+  };
+  const tiles: { label: string; value: string; sub: string; tone: string | null; target: "ac" | Severity }[] = [
+    {
+      label: "Acceptance", target: "ac",
+      value: criteria.length ? `${met}/${criteria.length}` : "—",
+      sub: !criteria.length ? "none linked" : unmet ? `${unmet} not met` : unclear ? `${unclear} unclear` : "all met",
+      tone: criteria.length ? acTone : null,
+    },
+    ...SEVERITIES.map((sev) => ({
+      label: sev.label, target: sev.key, value: String(r.counts[sev.key]), sub: SEVERITY_NOTE[sev.key].split(",")[0].toLowerCase(),
+      tone: r.counts[sev.key] ? sev.key : null,
+    })),
+  ];
   const headline =
     r.status === "failed" ? "Review failed"
       : r.status === "approved" ? (r.merged ? "Approved and merged" : r.autoComplete ? "Approved and set to auto-complete" : r.vote ? "Approved" : "Approval recommended")
@@ -273,9 +302,29 @@ export function Detail({ record: r, reviews, now, onOpen, onRetry, onSettings }:
             {r.stats && <span className="mono">{r.stats.files} files · <span className="tone-ok">+{r.stats.additions}</span> <span className="tone-critical">−{r.stats.deletions}</span></span>}
           </div>
         </div>
-        <div className={`headline tint-${t}`}>
-          <b className={`tone-${t}`}>{headline}{r.dryRun && r.status !== "failed" ? " (dry run)" : ""}</b>
-          <span className="tone-muted">{subline}</span>
+        <div className="card decision">
+          <div className={`decision-head tint-${t}`}>
+            <span className="glyph-tile" style={{ width: 34, height: 34, borderRadius: 10, fontSize: 16, background: `var(--${t})` }} aria-hidden>
+              {r.status === "approved" ? "✓" : r.status === "rejected" ? "✕" : "!"}
+            </span>
+            <div className="stack" style={{ gap: 3 }}>
+              <b className={`tone-${t}`} style={{ fontSize: 15 }}>{headline}{r.dryRun && r.status !== "failed" ? " (dry run)" : ""}</b>
+              <span className="tone-muted" style={{ lineHeight: 1.45 }}>{subline}</span>
+            </div>
+          </div>
+          {r.review && (
+            <div className="tiles">
+              {tiles.map((tile) => (
+                <button className="tile" key={tile.label} onClick={() => jump(tile.target)} title={`Go to ${tile.label}`}>
+                  <span className="section-label mono">{tile.label}</span>
+                  <span className="tile-value">
+                    <b style={{ color: tile.tone ? `var(--${tile.tone})` : "var(--faint)" }}>{tile.value}</b>
+                    <span>{tile.sub}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         {r.review && !r.vote && !r.dryRun && r.status !== "failed" && <VoteNow record={r} onSettings={onSettings} />}
         {r.error && (
@@ -291,45 +340,74 @@ export function Detail({ record: r, reviews, now, onOpen, onRetry, onSettings }:
           </div>
         )}
         {r.review && (
-          <div className="group">
-            <div className="group-title">Acceptance criteria
-              {criteria.length > 0 && <span className="count mono">{criteria.filter((c) => c.status === "met").length} of {criteria.length} met</span>}
-            </div>
-            {(r.workItems ?? []).length > 0 && (
-              <div className="help selectable">Checked against {r.workItems.map((w) => `${w.kind} ${w.id}: ${w.title}`).join(" · ")}</div>
-            )}
-            {criteria.length === 0 && (
-              <span className="help">
-                {(r.workItems ?? []).length === 0 ? "No work items are linked to this pull request, so there was nothing to check it against." : "The linked work items have no acceptance criteria."}
-              </span>
-            )}
-            {criteria.map((c, i) => (
-              <div className="card issue" key={i}>
-                <div className="row-between" style={{ gap: 16 }}>
-                  <span className="selectable" style={{ fontWeight: 500 }}>{c.criterion}</span>
-                  <span className={`pill tone-${criterionTone[c.status]} tint-${criterionTone[c.status]}`} style={{ flex: "none" }}>{criterionLabel[c.status]}</span>
+          <section id="sec-ac" className="card section-card" style={unmet ? { borderColor: "color-mix(in oklab, var(--critical) 45%, var(--line))" } : undefined}>
+            <div className="section-head" style={{ flexDirection: "column", alignItems: "stretch", gap: 12 }}>
+              <div className="inline" style={{ flexWrap: "wrap" }}>
+                <span className="glyph-tile" style={{ width: 22, height: 22, borderRadius: 7, fontSize: 12, background: "var(--text)", color: "var(--panel)" }} aria-hidden>!</span>
+                <span className="section-title" style={{ fontSize: 15 }}>Acceptance criteria</span>
+                <span className={`badge-soft ${criteria.length ? `tone-${acTone} tint-${acTone}` : ""}`}>
+                  {criteria.length ? `${met} of ${criteria.length} met` : "Not checked"}
+                </span>
+                <span className="spacer" />
+                <span className="section-label mono">Checked first</span>
+              </div>
+              {criteria.length > 0 && (
+                <div className="ac-bar" aria-hidden>
+                  {criteria.map((c, i) => <i key={i} style={{ background: `var(--${criterionTone[c.status]})` }} />)}
                 </div>
-                {(c.note || c.work_item) && <div className="issue-body selectable">{c.work_item ? `#${c.work_item} · ` : ""}{c.note}</div>}
+              )}
+              {(r.workItems ?? []).length > 0 && (
+                <div className="help selectable">Checked against <span style={{ color: "var(--text)" }}>{r.workItems.map((w) => `${w.kind} ${w.id}: ${w.title}`).join(" · ")}</span></div>
+              )}
+            </div>
+            {criteria.map((c, i) => (
+              <div className="ac-row" key={i} style={c.status === "not_met" ? { background: "color-mix(in oklab, var(--critical) 6%, transparent)" } : undefined}>
+                <span className="glyph-tile" style={{ background: `var(--${criterionTone[c.status]})` }} aria-hidden>{criterionGlyph[c.status]}</span>
+                <div className="stack" style={{ gap: 4 }}>
+                  <span className="selectable" style={{ fontWeight: 500, lineHeight: 1.45 }}>{c.criterion}</span>
+                  {c.note && <span className="selectable tone-muted" style={{ fontSize: 12.5, lineHeight: 1.55 }}>{c.note}</span>}
+                </div>
+                <div className="stack" style={{ alignItems: "flex-end", gap: 6 }}>
+                  <span className={`badge-soft tone-${criterionTone[c.status]} tint-${criterionTone[c.status]}`}>{criterionLabel[c.status]}</span>
+                  {c.work_item && <span className="count mono">#{c.work_item}</span>}
+                </div>
               </div>
             ))}
-          </div>
+            {criteria.length === 0 && (
+              <div className="ac-row tone-muted" style={{ display: "block", fontSize: 12.5 }}>
+                {(r.workItems ?? []).length === 0
+                  ? "No work items are linked to this pull request, so it was reviewed on code quality only."
+                  : "The linked work items have no acceptance criteria, so it was reviewed on code quality only."}
+              </div>
+            )}
+          </section>
         )}
         {r.review && groups.length === 0 && <span className="tone-ok">No issues found.</span>}
-        {groups.map((g) => (
-          <div className="group" key={g.key}>
-            <div className="group-title"><i className="dot" style={{ background: `var(--${g.key})` }} />{g.label}<span className="count mono">{g.issues.length}</span></div>
-            {g.issues.map((issue, i) => (
-              <div className="card issue" key={i}>
-                <div className="row-between" style={{ gap: 16 }}>
-                  <span style={{ fontWeight: 500 }} className="selectable">{issue.title ?? issue.body.split("\n")[0]}</span>
-                  <span className="mono" style={{ fontSize: 11, color: "var(--accent-fg)", flex: "none" }} title={issue.file ?? undefined}>{location(issue.file, issue.line)}</span>
+        {groups.map((g) => {
+          const open = !collapsed[g.key];
+          return (
+            <section id={`sec-${g.key}`} className="card section-card" key={g.key}>
+              <button className="section-head" onClick={() => setCollapsed({ ...collapsed, [g.key]: open })} aria-expanded={open}>
+                <i style={{ width: 10, height: 10, borderRadius: 3, background: `var(--${g.key})`, flex: "none" }} />
+                <span className="section-title">{g.label}</span>
+                <span className={`badge-soft mono tone-${g.key} tint-${g.key}`}>{g.issues.length}</span>
+                <span className="tone-muted" style={{ fontSize: 12 }}>{SEVERITY_NOTE[g.key]}</span>
+                <span className="spacer" />
+                <span className="tone-faint" style={{ fontSize: 12 }}>{open ? "Hide ▾" : "Show ▸"}</span>
+              </button>
+              {open && g.issues.map((issue, i) => (
+                <div className="issue-row" key={i}>
+                  <div className="row-between" style={{ gap: 16 }}>
+                    <span style={{ fontWeight: 500 }} className="selectable">{issue.title ?? issue.body.split("\n")[0]}</span>
+                    <span className="mono" style={{ fontSize: 11, color: "var(--accent-fg)", flex: "none" }} title={issue.file ?? undefined}>{location(issue.file, issue.line)}</span>
+                  </div>
+                  {issue.title && <div className="issue-body selectable">{issue.body}</div>}
+                  {issue.snippet && <pre className="snippet mono">{issue.snippet}</pre>}
                 </div>
-                {issue.title && <div className="issue-body selectable">{issue.body}</div>}
-                {issue.snippet && <pre className="snippet mono">{issue.snippet}</pre>}
-              </div>
-            ))}
-          </div>
-        ))}
+              ))}
+            </section>
+          );
+        })}
       </div>
 
       <div className="aside">

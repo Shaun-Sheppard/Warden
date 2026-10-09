@@ -80,6 +80,7 @@ input::placeholder { color: var(--faint); }
 .tint-ok { background: color-mix(in oklab, var(--ok) 14%, transparent); }
 .tint-critical { background: color-mix(in oklab, var(--critical) 14%, transparent); }
 .tint-major { background: color-mix(in oklab, var(--major) 14%, transparent); }
+.tint-minor { background: color-mix(in oklab, var(--minor) 14%, transparent); }
 .banner { margin: 16px 24px 0; padding: 12px 14px; border-radius: 12px; display: flex; gap: 12px; align-items: flex-start; line-height: 1.5; }
 .banner.slim { padding: 6px 12px; align-items: center; border-radius: 10px; flex: none; }
 .banner.slim .btn { height: 24px; }
@@ -156,6 +157,26 @@ pre.snippet { margin: 0; padding: 10px 12px; border-radius: 8px; background: var
 .comment-text { padding: 14px; font-size: 12.5px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; color: var(--muted); max-height: 320px; overflow: auto; }
 .timeline-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--line); }
 .timeline-row .label { flex: 1; color: var(--muted); }
+
+/* Review detail: decision card, acceptance criteria, severity sections */
+.decision, .section-card { overflow: hidden; }
+.decision-head { padding: 16px 18px; display: flex; align-items: center; gap: 14px; }
+.glyph-tile { width: 28px; height: 28px; border-radius: 8px; color: #fff; display: grid; place-items: center; font-size: 14px; font-weight: 700; flex: none; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 1px; background: var(--line); border-top: 1px solid var(--line); }
+.tile { padding: 12px 16px; display: flex; flex-direction: column; gap: 4px; background: var(--panel); transition: background 0.12s; }
+.tile:hover { background: color-mix(in oklab, var(--text) 4%, var(--panel)); }
+.tile-value { display: flex; align-items: baseline; gap: 8px; white-space: nowrap; font-size: 12px; color: var(--muted); }
+.tile-value b { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
+.section-head { padding: 14px 18px; display: flex; align-items: center; gap: 10px; width: 100%; }
+button.section-head:hover { background: var(--hover); }
+.section-title { font-weight: 600; font-size: 14px; letter-spacing: -0.01em; }
+.badge-soft { font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+.badge-soft:not([class*="tint-"]) { background: var(--raise); color: var(--muted); }
+.ac-bar { display: flex; gap: 4px; }
+.ac-bar i { flex: 1; height: 6px; border-radius: 3px; }
+.ac-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 14px; align-items: start; padding: 14px 18px; border-top: 1px solid var(--line); }
+.issue-row { padding: 14px 18px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+section[id^="sec-"] { scroll-margin-top: 16px; }
 
 /* Settings and setup */
 .settings { padding: 24px 24px 48px; max-width: 840px; display: flex; flex-direction: column; gap: 14px; }
