@@ -8,38 +8,47 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use crate::pipeline::{Progress, ProgressTx};
 use crate::review::extract_result;
 
-/// Read-only tool allowlist for the headless review.
-pub const ALLOWED_TOOLS: &str =
-    "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*)";
-/// Denied explicitly so a permissive user/project settings file cannot re-enable them.
-pub const DISALLOWED_TOOLS: &str = "Edit,Write,NotebookEdit";
-
-/// Which tools a headless run may use.
+/// Which built-in tools a headless run has. Anything not named here does
+/// not exist for that run.
 #[derive(Debug, Clone, Copy)]
 pub struct Tools {
-    pub allowed: &'static str,
-    pub disallowed: &'static str,
+    pub tools: &'static str,
+    /// Let file edits inside the working directory go ahead without asking.
+    pub accept_edits: bool,
 }
 
-/// Reviews only read.
-pub const REVIEW_TOOLS: Tools = Tools { allowed: ALLOWED_TOOLS, disallowed: DISALLOWED_TOOLS };
-/// Fixing issues edits files in the working directory it is run in. It
-/// still cannot commit, push or run arbitrary commands.
-pub const FIX_TOOLS: Tools = Tools {
-    allowed: "Read,Grep,Glob,Edit,Write,MultiEdit,Bash(git diff:*),Bash(git log:*),Bash(git show:*)",
-    disallowed: "NotebookEdit",
-};
+/// Reviews only read. There is deliberately no shell access: even
+/// "read-only" git commands can write files (`--output`) or read ones
+/// outside the repository (`--no-index`).
+pub const REVIEW_TOOLS: Tools = Tools { tools: "Read,Grep,Glob", accept_edits: false };
+/// Fixing issues also edits files, confined to the directory it runs in.
+/// It cannot commit, push or run commands.
+pub const FIX_TOOLS: Tools = Tools { tools: "Read,Grep,Glob,Edit,Write", accept_edits: true };
+
+/// Denied outright in every run, whatever else is configured.
+pub const DENIED_TOOLS: &str = "Bash,PowerShell,NotebookEdit,WebFetch,WebSearch,Task";
+
+/// The code under review is untrusted, and so is everything in its
+/// repository. These options keep it from reaching the rest of the machine:
+/// - `--restricted`: no command-running tools, file tools confined to the
+///   working directory, and no settings files loaded. The last matters most:
+///   a repository's own `.claude/settings.json` can define hooks, which
+///   would otherwise run as commands on this machine.
+/// - `--safe-mode`: the repository's CLAUDE.md, skills, plugins and hooks are not loaded.
+/// - `--strict-mcp-config`: no MCP servers, and so none of their tools.
+const CONFINEMENT: [&str; 3] = ["--restricted", "--safe-mode", "--strict-mcp-config"];
 
 /// Arguments for a headless review run.
 pub fn build_args(stream: bool) -> Vec<String> {
-    build_args_for(stream, REVIEW_TOOLS)
+    build_args_for(stream, REVIEW_TOOLS, &[])
 }
 
 /// Arguments for a headless run. The prompt itself is sent on standard
 /// input: it is long and multi-line, which command lines (Windows `.cmd`
 /// shims especially) cannot carry reliably.
 /// `stream` asks for one JSON event per line, so tool activity can be shown live.
-pub fn build_args_for(stream: bool, tools: Tools) -> Vec<String> {
+/// `extra_dirs` are readable in addition to the working directory.
+pub fn build_args_for(stream: bool, tools: Tools, extra_dirs: &[&Path]) -> Vec<String> {
     let mut args = vec![
         "-p".to_string(),
         "--output-format".to_string(),
@@ -49,12 +58,19 @@ pub fn build_args_for(stream: bool, tools: Tools) -> Vec<String> {
         // Required by the CLI for stream-json in print mode.
         args.push("--verbose".to_string());
     }
-    args.extend([
-        "--allowedTools".to_string(),
-        tools.allowed.to_string(),
-        "--disallowedTools".to_string(),
-        tools.disallowed.to_string(),
-    ]);
+    args.extend(CONFINEMENT.map(str::to_string));
+    let denied = if tools.accept_edits {
+        DENIED_TOOLS.to_string()
+    } else {
+        format!("{DENIED_TOOLS},Edit,Write,MultiEdit")
+    };
+    args.extend(["--tools".to_string(), tools.tools.to_string(), "--disallowedTools".to_string(), denied]);
+    if tools.accept_edits {
+        args.extend(["--permission-mode".to_string(), "acceptEdits".to_string()]);
+    }
+    for dir in extra_dirs {
+        args.extend(["--add-dir".to_string(), dir.display().to_string()]);
+    }
     args
 }
 
@@ -101,13 +117,16 @@ pub fn describe_event(event: &Value, repo: &Path) -> Vec<String> {
 
 /// Runs a read-only review in `repo` and returns the model's reply text.
 /// With `progress`, Claude's activity is streamed to it as it happens.
+/// `input_dir`, if given, is a second directory it may read.
 pub async fn run(
     repo: &Path,
     prompt: &str,
     timeout: Duration,
     progress: Option<&ProgressTx>,
+    input_dir: Option<&Path>,
 ) -> Result<String> {
-    run_with(repo, prompt, timeout, progress, REVIEW_TOOLS).await
+    let extra: Vec<&Path> = input_dir.into_iter().collect();
+    run_with(repo, prompt, timeout, progress, REVIEW_TOOLS, &extra).await
 }
 
 /// Runs Claude headless in `repo` with the given tools.
@@ -117,11 +136,12 @@ pub async fn run_with(
     timeout: Duration,
     progress: Option<&ProgressTx>,
     tools: Tools,
+    extra_dirs: &[&Path],
 ) -> Result<String> {
     let stream = progress.is_some();
     let program = crate::git::find_tool("claude").unwrap_or_else(|| "claude".into());
     let mut child = tokio::process::Command::new(program)
-        .args(build_args_for(stream, tools))
+        .args(build_args_for(stream, tools, extra_dirs))
         .current_dir(repo)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -191,6 +211,13 @@ pub async fn run_with(
         if !envelope.trim().is_empty() {
             extract_result(&envelope)?;
         }
+        if stderr.contains("unknown option") {
+            // Without these options the run would not be confined, so it does not run at all.
+            bail!(
+                "Your Claude Code CLI is too old for Warden's safety settings. Update it (run `claude update`) and try again. ({})",
+                stderr.trim()
+            );
+        }
         bail!(
             "`claude` exited with {} and no usable result: {}",
             status,
@@ -205,39 +232,49 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn value_after<'a>(args: &'a [String], flag: &str) -> &'a str {
+        &args[args.iter().position(|a| a == flag).unwrap() + 1]
+    }
+
     #[test]
-    fn args_are_headless_json_and_read_only() {
+    fn review_runs_are_confined_and_read_only() {
         let args = build_args(false);
         assert_eq!(&args[..3], ["-p", "--output-format", "json"]);
         assert!(!args.contains(&"--verbose".to_string()));
-        let allowed = &args[args.iter().position(|a| a == "--allowedTools").unwrap() + 1];
-        assert_eq!(
-            allowed,
-            "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*)"
-        );
-        for tool in ["Edit", "Write"] {
-            assert!(!allowed.split(',').any(|t| t == tool));
+        for flag in ["--restricted", "--safe-mode", "--strict-mcp-config"] {
+            assert!(args.contains(&flag.to_string()), "{flag} is what keeps untrusted repositories contained");
         }
+        // No shell at all, and no way to change files.
+        assert_eq!(value_after(&args, "--tools"), "Read,Grep,Glob");
+        let denied: Vec<&str> = value_after(&args, "--disallowedTools").split(',').collect();
+        for tool in ["Bash", "Edit", "Write", "WebFetch", "Task"] {
+            assert!(denied.contains(&tool), "{tool}");
+        }
+        assert!(!args.iter().any(|a| a.contains("Bash(")), "no git or other commands, however read-only they look");
+        assert!(!args.contains(&"--permission-mode".to_string()));
+        assert!(!args.contains(&"--allowedTools".to_string()));
     }
 
     #[test]
-    fn fix_tools_can_edit_but_not_run_commands_or_change_git_state() {
-        let args = build_args_for(false, FIX_TOOLS);
-        let allowed = &args[args.iter().position(|a| a == "--allowedTools").unwrap() + 1];
-        let tools: Vec<&str> = allowed.split(',').collect();
-        assert!(tools.contains(&"Edit") && tools.contains(&"Write"));
-        // Only read-only git is allowed through Bash: no commit, push, or other commands.
-        for tool in tools.iter().filter(|t| t.starts_with("Bash")) {
-            assert!(["Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)"].contains(tool), "{tool}");
+    fn fix_runs_can_edit_but_are_just_as_confined() {
+        let args = build_args_for(false, FIX_TOOLS, &[]);
+        for flag in ["--restricted", "--safe-mode", "--strict-mcp-config"] {
+            assert!(args.contains(&flag.to_string()));
         }
-        assert!(!tools.contains(&"Bash"));
+        assert_eq!(value_after(&args, "--tools"), "Read,Grep,Glob,Edit,Write");
+        assert_eq!(value_after(&args, "--permission-mode"), "acceptEdits");
+        let denied: Vec<&str> = value_after(&args, "--disallowedTools").split(',').collect();
+        assert!(denied.contains(&"Bash") && denied.contains(&"WebFetch"));
+        assert!(!denied.contains(&"Edit"));
     }
 
     #[test]
-    fn streaming_args_keep_the_same_tool_limits() {
-        let args = build_args(true);
+    fn extra_directories_come_last_and_streaming_keeps_the_same_limits() {
+        let dir = Path::new("/cache/review-input/7");
+        let args = build_args_for(true, REVIEW_TOOLS, &[dir]);
         assert_eq!(&args[1..4], ["--output-format", "stream-json", "--verbose"]);
-        assert_eq!(args[4..], build_args(false)[3..]);
+        assert_eq!(&args[args.len() - 2..], ["--add-dir", "/cache/review-input/7"]);
+        assert_eq!(args[4..args.len() - 2], build_args(false)[3..]);
     }
 
     #[test]

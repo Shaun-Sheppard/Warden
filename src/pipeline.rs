@@ -48,6 +48,15 @@ pub fn managed_clone_name(repo: &Repository) -> String {
     format!("{safe}-{id}")
 }
 
+/// A scratch directory that is removed when the review ends, however it ends.
+struct Scratch(PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// Git calls block, so they run off the async threads to keep the UI responsive.
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T> + Send + 'static) -> Result<T> {
     tokio::task::spawn_blocking(f)
@@ -143,6 +152,27 @@ pub async fn run_review(
         }
     };
 
+    // The reviewer cannot run git (or anything else), so the change is handed
+    // to it as files, and it always works in a copy of the PR's own version.
+    stage("Preparing the change for review".to_string());
+    let scratch = Scratch(cache_dir.join("review-input").join(format!("{id}-{}", Utc::now().timestamp_millis())));
+    let input_dir = scratch.0.join("change");
+    let work_dir = if checked_out { repo_path.clone() } else { scratch.0.join("files") };
+    {
+        let (repo, input, work) = (repo_path.clone(), input_dir.clone(), work_dir.clone());
+        let (s, t) = (source.clone(), target.clone());
+        blocking(move || {
+            git::write_review_input(&repo, &t, &s, &input)?;
+            if !checked_out {
+                // A user's own clone is never checked out or changed; copy the PR's files out instead.
+                git::snapshot(&repo, &format!("origin/{s}"), &work)?;
+            }
+            Ok(())
+        })
+        .await?;
+    }
+    let input_text = input_dir.display().to_string();
+
     // Conventions come from the target branch, not from the PR under review.
     let conventions = git::show_file(&repo_path, &format!("origin/{target}"), "REVIEW.md");
     let inline = config.review.prompt.as_deref().map(str::trim).filter(|p| !p.is_empty());
@@ -164,19 +194,19 @@ pub async fn run_review(
         target: &target,
         conventions: conventions.as_deref(),
         work_items: &work_items,
-        checked_out,
+        input_dir: &input_text,
     });
 
     let timeout = Duration::from_secs(config.review.timeout_seconds);
     let activity = stream_activity.then_some(tx);
     stage("Claude is reviewing".to_string());
-    let raw = claude::run(&repo_path, &prompt, timeout, activity).await?;
+    let raw = claude::run(&work_dir, &prompt, timeout, activity, Some(&input_dir)).await?;
     let parsed = match review::parse_review(&raw) {
         Ok(parsed) => parsed,
         Err(first) => {
             stage(format!("Output was not valid review JSON ({first}); asking Claude again"));
             let retry_prompt = review::build_retry_prompt(&raw, &first.to_string());
-            let retry_raw = claude::run(&repo_path, &retry_prompt, timeout, activity).await?;
+            let retry_raw = claude::run(&work_dir, &retry_prompt, timeout, activity, Some(&input_dir)).await?;
             match review::parse_review(&retry_raw) {
                 Ok(parsed) => parsed,
                 Err(second) => {

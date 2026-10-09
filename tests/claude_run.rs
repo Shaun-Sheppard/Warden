@@ -11,6 +11,11 @@ use prr::pipeline::Progress;
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 # The prompt arrives on standard input, the options as arguments.
 prompt=$(cat)
+# Every run must carry the options that confine an untrusted repository.
+case "$*" in
+  *--restricted*--safe-mode*--strict-mcp-config*) ;;
+  *) echo '{"type":"result","is_error":true,"result":"run was not confined"}'; exit 1 ;;
+esac
 case "$prompt $*" in
   *FAIL*)
     echo '{"type":"result","is_error":true,"result":"Not logged in"}'
@@ -38,11 +43,11 @@ async fn json_and_stream_modes_timeouts_and_errors() {
     let repo = tmp.path();
     let long = Duration::from_secs(20);
 
-    let plain = claude::run(repo, "review", long, None).await.unwrap();
+    let plain = claude::run(repo, "review", long, None, None).await.unwrap();
     assert_eq!(plain, "plain answer");
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let streamed = claude::run(repo, "review", long, Some(&tx)).await.unwrap();
+    let streamed = claude::run(repo, "review", long, Some(&tx), Some(repo)).await.unwrap();
     assert_eq!(streamed, "streamed answer");
     assert_eq!(
         rx.try_recv().unwrap(),
@@ -50,13 +55,13 @@ async fn json_and_stream_modes_timeouts_and_errors() {
     );
     assert!(rx.try_recv().is_err());
 
-    let err = claude::run(repo, "FAIL", long, None).await.unwrap_err().to_string();
+    let err = claude::run(repo, "FAIL", long, None, None).await.unwrap_err().to_string();
     assert!(err.contains("Not logged in"), "{err}");
-    let err = claude::run(repo, "FAIL", long, Some(&tx)).await.unwrap_err().to_string();
+    let err = claude::run(repo, "FAIL", long, Some(&tx), None).await.unwrap_err().to_string();
     assert!(err.contains("Not logged in"), "{err}");
 
     let started = std::time::Instant::now();
-    let err = claude::run(repo, "SLOW", Duration::from_millis(300), None)
+    let err = claude::run(repo, "SLOW", Duration::from_millis(300), None, None)
         .await
         .unwrap_err()
         .to_string();

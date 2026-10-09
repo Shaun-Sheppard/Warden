@@ -159,7 +159,7 @@ pub fn plan(prs: &[PullRequest], people: &[String], tracking: &Tracking) -> Vec<
 pub fn step_for_stage(stage: &str) -> u8 {
     if stage.starts_with("Fetching PR") || stage.starts_with("Reading linked") {
         0
-    } else if stage.starts_with("Claude") || stage.starts_with("Output was not valid") {
+    } else if stage.starts_with("Claude") || stage.starts_with("Output was not valid") || stage.starts_with("Preparing the change") {
         2
     } else if stage.starts_with("Saving") {
         3

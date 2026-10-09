@@ -299,11 +299,49 @@ pub fn remote_head(repo: &Path, branch: &str, auth: Option<&GitAuth>) -> Result<
 /// branch has moved on, the push is refused.
 pub fn push_head(dir: &Path, branch: &str, auth: Option<&GitAuth>) -> Result<()> {
     let mut cmd = git(dir);
-    cmd.args(["push", "--quiet", "origin"]).arg(format!("HEAD:refs/heads/{branch}"));
+    // --no-verify: no hook in the clone gets a say in what is pushed.
+    cmd.args(["push", "--quiet", "--no-verify", "origin"]).arg(format!("HEAD:refs/heads/{branch}"));
     if let Some(auth) = auth {
         auth.apply(&mut cmd);
     }
     run(cmd, "push").map(|_| ())
+}
+
+/// Writes the pull request's change into `dir` as files, for a reviewer
+/// that has no git access: the changed files, the full diff, the commits.
+pub fn write_review_input(repo: &Path, target: &str, source: &str, dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(dir).with_context(|| format!("Could not create {}", dir.display()))?;
+    let changed = format!("origin/{target}...origin/{source}");
+    let commits = format!("origin/{target}..origin/{source}");
+    let outputs: [(&str, Vec<&str>); 3] = [
+        ("files.txt", vec!["diff", "--no-color", "--no-ext-diff", "--stat=200", "--stat-count=5000", &changed]),
+        ("diff.patch", vec!["diff", "--no-color", "--no-ext-diff", &changed]),
+        ("commits.txt", vec!["log", "--no-color", "--date=short", "--format=%h  %ad  %an%n    %s%n%w(0,4,4)%b", &commits]),
+    ];
+    for (name, args) in outputs {
+        let mut cmd = git(repo);
+        cmd.args(&args);
+        let text = run(cmd, args[0])?;
+        std::fs::write(dir.join(name), text).with_context(|| format!("Could not write {name}"))?;
+    }
+    Ok(())
+}
+
+/// Copies the files of `rev` into `dir` without touching the repository's
+/// working tree, index or branches.
+pub fn snapshot(repo: &Path, rev: &str, dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(dir).with_context(|| format!("Could not create {}", dir.display()))?;
+    let archive = dir.with_extension("tar");
+    let mut cmd = git(repo);
+    cmd.args(["archive", "--format=tar", "-o"]).arg(&archive).arg(rev);
+    run(cmd, "archive")?;
+    let unpacked = Command::new("tar").arg("-xf").arg(&archive).arg("-C").arg(dir).output();
+    let _ = std::fs::remove_file(&archive);
+    let out = unpacked.map_err(|e| anyhow!("Could not run tar: {e}"))?;
+    if !out.status.success() {
+        bail!("Could not unpack the pull request's files:\n{}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(())
 }
 
 /// The user's own git email, if they have one configured.

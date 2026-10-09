@@ -69,6 +69,21 @@ Requires Rust, Node, `git`, and the Claude Code CLI signed in (`claude auth logi
 6. **Several people running Warden:** before reviewing, a copy leaves a hidden marker on the pull request (the `Warden.Review` property, not visible in Azure DevOps) saying who is reviewing which commit. Other copies skip that PR, show it under "Being reviewed elsewhere", and do not review a commit another copy has already reviewed. A marker left by a copy that quit mid-review expires after 20 minutes. "Review again" overrides the marker. Azure DevOps has no lock, so two copies that start within the same couple of seconds can, rarely, both review.
 7. **History:** one row per pull request, showing its latest review; earlier reviews of the same PR are listed on the review page. Each review is kept for 90 days with its issues, the exact comment posted, a timeline and the log. The sidebar counts and the default list cover the last 7 days. Failed reviews are shown with the reason and retried up to three times; "Review again" re-runs one on demand.
 
+### How Claude is confined
+
+A pull request is untrusted input: its code, description, linked work items and every file in its repository could be written to manipulate the reviewer. Warden therefore runs Claude with:
+
+- **No shell.** Reviews have only `Read`, `Grep` and `Glob`. Git is not available to it at all, because even "read-only" git commands can write files (`--output`) or read files outside the repository (`--no-index`). Warden prepares the diff, changed-file list and commits itself and passes them as files.
+- **File access limited to the repository copy** (plus that folder of prepared files). It cannot read your home folder, keys or other projects.
+- **No settings from the repository.** A repository's own `.claude/settings.json` can define hooks that run commands; these, and the repository's `CLAUDE.md`, skills and plugins, are not loaded. No MCP servers are loaded either.
+- **Fixes** add `Edit` and `Write`, limited to the fix's own working folder, and cannot touch git or tool configuration files.
+
+This relies on the Claude Code CLI's `--restricted`, `--safe-mode` and `--strict-mcp-config` options. An older CLI without them is refused with a message to update, so a review never runs unconfined.
+
+Confinement limits what a manipulated review can *do*; it cannot guarantee the *verdict* is right. The prompt tells Claude to treat instructions found in a pull request as a critical issue, which blocks approval, but automatic approval of other people's pull requests remains a matter of trust in the review.
+
+`tests/live_claude.rs` runs a real review against a hostile repository (a command hook, plus instructions to read and write outside the repository and approve) and checks that none of it works: `cargo test --test live_claude -- --ignored`.
+
 ### Fix with Claude
 
 On a review with issues, tick the ones to fix and choose "Fix selected". Claude edits a private copy of the pull request's branch (a separate git worktree under `~/.cache/prr/fixes`), with file-editing tools but no ability to commit, push or run commands. The result appears under **Fixes** in the sidebar with Claude's own report and the full diff.
@@ -196,7 +211,7 @@ The approval is recorded as yours, on the strength of an AI review alone. Whethe
 
 1. Fetches the PR details from Azure DevOps.
 2. Gets the code. `prr` keeps its own clone of each repo under `~/.cache/prr/repos/`: it clones on the first review of a repo, fetches the PR's source and target branches on later ones, and checks out the PR's source branch there. It authenticates with your PAT, passed to git through the environment so it is never written to disk or shown on a command line. Your own working copies are not involved.
-3. Runs `claude -p` in the clone with a read-only tool allowlist (`Read`, `Grep`, `Glob`, `git diff`, `git log`, `git show`), asking it to review `git diff origin/<target>...origin/<source>`.
+3. Runs `claude -p` on a copy of the PR's files with only `Read`, `Grep` and `Glob`, confined as described under "How Claude is confined". The diff, changed-file list and commits are handed to it as files.
 4. Parses the JSON result (one retry if it is invalid), saves it to `~/.cache/prr/reviews/<id>-<timestamp>.json`, and displays the verdict, summary and comments.
 5. For each comment, and then for an overall summary comment: `[p]ost / [e]dit / [s]kip / [q]uit`. Edit opens `$EDITOR`. Quit abandons the whole run and posts nothing.
 6. Lists what was chosen and asks `Post N comments to PR #<id>? [y/N]` (default No).
