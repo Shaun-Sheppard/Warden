@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type AvailableUpdate } from "./api";
+import { Fixes } from "./fixes";
 import { Setup, SettingsView, type UpdateOffer } from "./forms";
-import type { ClaudeStatus, HistoryRecord, Live, Settings } from "./types";
+import type { ClaudeStatus, Fix, HistoryRecord, Live, Settings } from "./types";
 import { CheckButton, Segmented } from "./ui";
 import { ago, pollLabel } from "./util";
 import { Activity, Detail, History } from "./views";
 
-type View = "activity" | "history" | "detail" | "settings";
+type View = "activity" | "history" | "detail" | "fixes" | "settings";
 type Filter = "all" | "approved" | "rejected" | "failed";
 
 const UPDATE_CHECK_MS = 6 * 60 * 60 * 1000;
@@ -50,6 +51,7 @@ export default function App() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [live, setLive] = useState<Live | null>(null);
   const [history, setHistory] = useState<HistoryRecord[]>([]);
+  const [fixes, setFixes] = useState<Fix[]>([]);
   const [claude, setClaude] = useState<ClaudeStatus | null>(null);
   const [view, setView] = useState<View>("activity");
   const [selected, setSelected] = useState<string | null>(null);
@@ -112,7 +114,8 @@ export default function App() {
     api.getLive().then(setLive);
     api.getHistory().then(setHistory);
     api.claudeStatus().then(setClaude);
-    const stops = [api.onLive(setLive), api.onHistory(setHistory), api.onSettings(setSettings)];
+    api.getFixes().then(setFixes);
+    const stops = [api.onLive(setLive), api.onHistory(setHistory), api.onSettings(setSettings), api.onFixes(setFixes)];
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => {
       stops.forEach((stop) => stop());
@@ -179,7 +182,9 @@ export default function App() {
   const projects = settings.projects.length ? settings.projects : [...new Set(history.map((r) => r.pr.project))].sort();
   const statusText = { setup: "Not set up", paused: "Paused", reviewing: "Reviewing", error: "Problem", idle: "Monitoring" }[live.status];
   const statusColor = live.status === "error" ? "var(--critical)" : live.status === "paused" ? "var(--faint)" : "var(--ok)";
-  const titles: Record<View, string> = { activity: "Activity", history: "Review history", detail: "Review", settings: "Settings" };
+  const titles: Record<View, string> = { activity: "Activity", history: "Review history", detail: "Review", fixes: "Fixes", settings: "Settings" };
+  const fixesWaiting = fixes.filter((f) => f.status === "ready").length;
+  const fixInProgress = fixes.some((f) => f.status === "generating" || f.status === "pushing");
   const claudeProblem = claude && (!claude.found || !claude.signedIn);
 
   return (
@@ -200,6 +205,11 @@ export default function App() {
           </button>
           <button className={`nav-item ${view === "history" || view === "detail" ? "on" : ""}`} onClick={() => { setProject(null); setView("history"); }}>
             <svg className="glyph" viewBox="0 0 16 16" aria-hidden><circle cx="8" cy="8" r="6.25" /><path d="M8 4.75V8l2.25 1.5" /></svg><span className="grow">History</span><span className="count mono" title="Pull requests reviewed in the last 7 days">{recent.length}</span>
+          </button>
+          <button className={`nav-item ${view === "fixes" ? "on" : ""}`} onClick={() => setView("fixes")}>
+            <svg className="glyph" viewBox="0 0 16 16" aria-hidden><path d="M9.9 2.2a3.4 3.4 0 0 0-3.6 4.6L2 11.1a1.5 1.5 0 0 0 0 2.1l.8.8a1.5 1.5 0 0 0 2.1 0l4.3-4.3a3.4 3.4 0 0 0 4.6-3.6l-2.1 2.1-1.9-.5-.5-1.9z" /></svg>
+            <span className="grow">Fixes</span>
+            {fixesWaiting > 0 ? <span className="badge mono" title="Fixes waiting for your review">{fixesWaiting}</span> : fixInProgress ? <span className="spinner" aria-label="A fix is in progress" /> : null}
           </button>
           <button className={`nav-item ${view === "settings" ? "on" : ""}`} onClick={() => setView("settings")}>
             <svg className="glyph" viewBox="0 0 16 16" aria-hidden><circle cx="8" cy="8" r="2" /><path d="M8 1.75v1.5M8 12.75v1.5M1.75 8h1.5M12.75 8h1.5M3.6 3.6l1.05 1.05M11.35 11.35l1.05 1.05M3.6 12.4l1.05-1.05M11.35 4.65l1.05-1.05" /><circle cx="8" cy="8" r="4.25" /></svg><span className="grow">Settings</span>
@@ -258,8 +268,11 @@ export default function App() {
           {view === "history" && <History rows={rows} now={now} onOpen={open}
             emptyHint={period === "week" && groups.length > recent.length ? "No reviews match in the last 7 days. Switch to \"90 days\" to see older ones." : "No reviews match."} />}
           {view === "detail" && (record
-            ? <Detail record={record} reviews={byPr.get(record.pr.id) ?? [record]} now={now} onOpen={open} onRetry={() => api.retryReview(record.pr.id).then(() => setView("activity"))} onSettings={() => setView("settings")} />
+            ? <Detail record={record} reviews={byPr.get(record.pr.id) ?? [record]} now={now} onOpen={open}
+                pendingFix={fixes.some((f) => f.pr.id === record.pr.id && (f.status === "ready" || f.status === "generating" || f.status === "pushing"))}
+                onFix={(issues) => api.startFix(record.recordId, issues).then(() => setView("fixes"))} onShowFixes={() => setView("fixes")} onRetry={() => api.retryReview(record.pr.id).then(() => setView("activity"))} onSettings={() => setView("settings")} />
             : <div className="empty">This review is no longer in the history.</div>)}
+          {view === "fixes" && <Fixes fixes={fixes} now={now} />}
           {view === "settings" && <SettingsView settings={settings} change={change} onRunSetup={() => change({ setupComplete: false })} offer={offer} onCheck={checkForUpdate} />}
         </div>
       </main>

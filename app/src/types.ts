@@ -84,6 +84,24 @@ export interface HistoryRecord {
   workItems: { id: number; kind: string; title: string }[];
 }
 
+export interface Fix {
+  id: string;
+  recordId: string;
+  pr: PrInfo;
+  status: "generating" | "ready" | "pushing" | "pushed" | "noChanges" | "failed";
+  issues: { severity: Severity; title: string; location: string; body: string }[];
+  baseCommit: string | null;
+  diff: string;
+  diffTruncated: boolean;
+  files: { path: string; additions: number; deletions: number }[];
+  report: string;
+  error: string | null;
+  commit: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+  lines: LogLine[];
+}
+
 export interface Current {
   pr: PrInfo;
   step: number;

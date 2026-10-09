@@ -14,11 +14,32 @@ pub const ALLOWED_TOOLS: &str =
 /// Denied explicitly so a permissive user/project settings file cannot re-enable them.
 pub const DISALLOWED_TOOLS: &str = "Edit,Write,NotebookEdit";
 
+/// Which tools a headless run may use.
+#[derive(Debug, Clone, Copy)]
+pub struct Tools {
+    pub allowed: &'static str,
+    pub disallowed: &'static str,
+}
+
+/// Reviews only read.
+pub const REVIEW_TOOLS: Tools = Tools { allowed: ALLOWED_TOOLS, disallowed: DISALLOWED_TOOLS };
+/// Fixing issues edits files in the working directory it is run in. It
+/// still cannot commit, push or run arbitrary commands.
+pub const FIX_TOOLS: Tools = Tools {
+    allowed: "Read,Grep,Glob,Edit,Write,MultiEdit,Bash(git diff:*),Bash(git log:*),Bash(git show:*)",
+    disallowed: "NotebookEdit",
+};
+
+/// Arguments for a headless review run.
+pub fn build_args(stream: bool) -> Vec<String> {
+    build_args_for(stream, REVIEW_TOOLS)
+}
+
 /// Arguments for a headless run. The prompt itself is sent on standard
 /// input: it is long and multi-line, which command lines (Windows `.cmd`
 /// shims especially) cannot carry reliably.
 /// `stream` asks for one JSON event per line, so tool activity can be shown live.
-pub fn build_args(stream: bool) -> Vec<String> {
+pub fn build_args_for(stream: bool, tools: Tools) -> Vec<String> {
     let mut args = vec![
         "-p".to_string(),
         "--output-format".to_string(),
@@ -30,9 +51,9 @@ pub fn build_args(stream: bool) -> Vec<String> {
     }
     args.extend([
         "--allowedTools".to_string(),
-        ALLOWED_TOOLS.to_string(),
+        tools.allowed.to_string(),
         "--disallowedTools".to_string(),
-        DISALLOWED_TOOLS.to_string(),
+        tools.disallowed.to_string(),
     ]);
     args
 }
@@ -78,7 +99,7 @@ pub fn describe_event(event: &Value, repo: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Runs Claude headless in `repo` and returns the model's reply text.
+/// Runs a read-only review in `repo` and returns the model's reply text.
 /// With `progress`, Claude's activity is streamed to it as it happens.
 pub async fn run(
     repo: &Path,
@@ -86,10 +107,21 @@ pub async fn run(
     timeout: Duration,
     progress: Option<&ProgressTx>,
 ) -> Result<String> {
+    run_with(repo, prompt, timeout, progress, REVIEW_TOOLS).await
+}
+
+/// Runs Claude headless in `repo` with the given tools.
+pub async fn run_with(
+    repo: &Path,
+    prompt: &str,
+    timeout: Duration,
+    progress: Option<&ProgressTx>,
+    tools: Tools,
+) -> Result<String> {
     let stream = progress.is_some();
     let program = crate::git::find_tool("claude").unwrap_or_else(|| "claude".into());
     let mut child = tokio::process::Command::new(program)
-        .args(build_args(stream))
+        .args(build_args_for(stream, tools))
         .current_dir(repo)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -186,6 +218,19 @@ mod tests {
         for tool in ["Edit", "Write"] {
             assert!(!allowed.split(',').any(|t| t == tool));
         }
+    }
+
+    #[test]
+    fn fix_tools_can_edit_but_not_run_commands_or_change_git_state() {
+        let args = build_args_for(false, FIX_TOOLS);
+        let allowed = &args[args.iter().position(|a| a == "--allowedTools").unwrap() + 1];
+        let tools: Vec<&str> = allowed.split(',').collect();
+        assert!(tools.contains(&"Edit") && tools.contains(&"Write"));
+        // Only read-only git is allowed through Bash: no commit, push, or other commands.
+        for tool in tools.iter().filter(|t| t.starts_with("Bash")) {
+            assert!(["Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)"].contains(tool), "{tool}");
+        }
+        assert!(!tools.contains(&"Bash"));
     }
 
     #[test]

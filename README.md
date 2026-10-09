@@ -29,6 +29,12 @@ Installed copies check GitHub for a newer release when they start and every six 
 
 Update packages are signed with a Tauri updater key. The public half is in `app/src-tauri/tauri.conf.json`; the private half is the `TAURI_SIGNING_PRIVATE_KEY` secret on the GitHub repository and must be kept safe: without it, existing installs cannot be updated.
 
+### Signing on macOS
+
+Releases are signed with a self-signed certificate ("Warden Self-Signed"). It is not an Apple Developer ID, so the first-launch warning remains, but it gives every version the same identity: after choosing **Always Allow** once on the Keychain prompt, updates no longer ask again.
+
+The certificate's private half is the `MACOS_CERTIFICATE` and `MACOS_CERTIFICATE_PASSWORD` secrets on the GitHub repository; the public certificate is in `app/src-tauri/signing/`. If it is ever replaced, every user gets one more Keychain prompt. For local builds, `app/scripts/sign-local.sh` signs the built app with the same certificate when it is set up in `~/.tauri`.
+
 ### Releasing a new version
 
 Set the new version in `app/src-tauri/tauri.conf.json` (and, to keep them in step, `app/package.json` and `app/src-tauri/Cargo.toml`), commit, then push a matching tag:
@@ -62,6 +68,14 @@ Requires Rust, Node, `git`, and the Claude Code CLI signed in (`claude auth logi
 5. **New commits:** a reviewed PR, approved or rejected, is reviewed again whenever new commits are pushed, so a decision never covers code that was not looked at. New comments on the PR do not trigger a review.
 6. **Several people running Warden:** before reviewing, a copy leaves a hidden marker on the pull request (the `Warden.Review` property, not visible in Azure DevOps) saying who is reviewing which commit. Other copies skip that PR, show it under "Being reviewed elsewhere", and do not review a commit another copy has already reviewed. A marker left by a copy that quit mid-review expires after 20 minutes. "Review again" overrides the marker. Azure DevOps has no lock, so two copies that start within the same couple of seconds can, rarely, both review.
 7. **History:** one row per pull request, showing its latest review; earlier reviews of the same PR are listed on the review page. Each review is kept for 90 days with its issues, the exact comment posted, a timeline and the log. The sidebar counts and the default list cover the last 7 days. Failed reviews are shown with the reason and retried up to three times; "Review again" re-runs one on demand.
+
+### Fix with Claude
+
+On a review with issues, tick the ones to fix and choose "Fix selected". Claude edits a private copy of the pull request's branch (a separate git worktree under `~/.cache/prr/fixes`), with file-editing tools but no ability to commit, push or run commands. The result appears under **Fixes** in the sidebar with Claude's own report and the full diff.
+
+Nothing reaches the repository until you choose **Approve and push**. Warden then commits to the PR's branch as you, without forcing, and the new commit is reviewed like any other push. If the branch has moved on since the fix was prepared, the push is refused. **Discard** throws the changes away.
+
+Warden cannot build the project or run its tests, so a fix is unverified until your pipeline runs. Pushing is blocked while Dry run is on.
 
 A system notification is shown when a new pull request starts being reviewed, when the review finishes (with the decision and what was done), and when an update is available; turn them off under Settings → Review behaviour.
 

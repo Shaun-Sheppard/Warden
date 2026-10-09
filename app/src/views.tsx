@@ -234,8 +234,10 @@ function VoteNow({ record: r, onSettings }: { record: HistoryRecord; onSettings:
   );
 }
 
-export function Detail({ record: r, reviews, now, onOpen, onRetry, onSettings }: {
+export function Detail({ record: r, reviews, now, onOpen, onRetry, onSettings, pendingFix, onFix, onShowFixes }: {
   record: HistoryRecord; reviews: HistoryRecord[]; now: number; onOpen: (recordId: string) => void; onRetry: () => void; onSettings: () => void;
+  /** A fix for this pull request is already being prepared or awaiting approval. */
+  pendingFix: boolean; onFix: (issues: number[]) => Promise<void>; onShowFixes: () => void;
 }) {
   const t = tone(r);
   const first = r.pr.author.split(" ")[0];
@@ -288,7 +290,23 @@ export function Detail({ record: r, reviews, now, onOpen, onRetry, onSettings }:
     ] : []),
     ...(r.autoComplete ? [{ label: "Auto-complete", value: r.merged ? `merged into ${r.pr.target}` : "set", tone: r.merged ? "ok" : undefined }] : []),
   ];
-  const groups = SEVERITIES.map((s) => ({ ...s, issues: (r.review?.comments ?? []).filter((c) => c.severity === s.key) })).filter((g) => g.issues.length);
+  // Each issue keeps its position in the review, which is how a fix refers to it.
+  const indexed = (r.review?.comments ?? []).map((issue, index) => ({ issue, index }));
+  const groups = SEVERITIES.map((s) => ({ ...s, issues: indexed.filter(({ issue }) => issue.severity === s.key) })).filter((g) => g.issues.length);
+  // Blocking issues start ticked; they are the ones that failed the pull request.
+  const blockingIndexes = indexed.filter(({ issue }) => issue.severity !== "minor").map(({ index }) => index);
+  const [picked, setPicked] = useState<number[]>(blockingIndexes);
+  const [fixState, setFixState] = useState<{ busy: boolean; error: string | null }>({ busy: false, error: null });
+  useEffect(() => {
+    setPicked(blockingIndexes);
+    setFixState({ busy: false, error: null });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [r.recordId]);
+  const togglePicked = (index: number) => setPicked((p) => (p.includes(index) ? p.filter((i) => i !== index) : [...p, index]));
+  const startFix = () => {
+    setFixState({ busy: true, error: null });
+    onFix([...picked].sort((x, y) => x - y)).then(() => setFixState({ busy: false, error: null }), (e) => setFixState({ busy: false, error: String(e) }));
+  };
 
   return (
     <div className="detail">
@@ -383,6 +401,23 @@ export function Detail({ record: r, reviews, now, onOpen, onRetry, onSettings }:
           </section>
         )}
         {r.review && groups.length === 0 && <span className="tone-ok">No issues found.</span>}
+        {groups.length > 0 && (
+          <div className="fix-bar card">
+            <div className="stack" style={{ gap: 3, flex: 1 }}>
+              <b>Fix with Claude</b>
+              <span className="help">
+                {pendingFix ? "A fix for this pull request is already in progress or waiting for your review."
+                  : "Tick the issues to fix. Claude prepares the changes for you to read; nothing is pushed until you approve them."}
+              </span>
+              {fixState.error && <span className="tone-critical selectable" role="alert">{fixState.error}</span>}
+            </div>
+            {pendingFix ? <button className="btn" onClick={onShowFixes}>View fixes</button> : (
+              <button className="btn primary" disabled={fixState.busy || picked.length === 0} onClick={startFix}>
+                {fixState.busy ? "Starting…" : picked.length ? `Fix ${picked.length} selected` : "Select issues"}
+              </button>
+            )}
+          </div>
+        )}
         {groups.map((g) => {
           const open = !collapsed[g.key];
           return (
@@ -395,10 +430,14 @@ export function Detail({ record: r, reviews, now, onOpen, onRetry, onSettings }:
                 <span className="spacer" />
                 <span className="tone-faint" style={{ fontSize: 12 }}>{open ? "Hide ▾" : "Show ▸"}</span>
               </button>
-              {open && g.issues.map((issue, i) => (
-                <div className="issue-row" key={i}>
+              {open && g.issues.map(({ issue, index }) => (
+                <div className="issue-row" key={index}>
                   <div className="row-between" style={{ gap: 16 }}>
-                    <span style={{ fontWeight: 500 }} className="selectable">{issue.title ?? issue.body.split("\n")[0]}</span>
+                    <label className="inline" style={{ gap: 10, alignItems: "baseline", minWidth: 0 }}>
+                      <input type="checkbox" checked={picked.includes(index)} onChange={() => togglePicked(index)} disabled={pendingFix}
+                        aria-label={`Include in fix: ${issue.title ?? issue.body.split("\n")[0]}`} />
+                      <span style={{ fontWeight: 500 }} className="selectable">{issue.title ?? issue.body.split("\n")[0]}</span>
+                    </label>
                     <span className="mono" style={{ fontSize: 11, color: "var(--accent-fg)", flex: "none" }} title={issue.file ?? undefined}>{location(issue.file, issue.line)}</span>
                   </div>
                   {issue.title && <div className="issue-body selectable">{issue.body}</div>}

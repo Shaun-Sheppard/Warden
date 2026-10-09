@@ -18,6 +18,8 @@ use prr::review::{Comment, CriterionStatus, Review, Severity};
 use crate::model::*;
 use crate::store::Store;
 
+mod fixes;
+
 /// A PR whose review keeps failing is left alone after this many attempts.
 pub const MAX_ATTEMPTS: u32 = 3;
 const MAX_HISTORY: usize = 500;
@@ -42,6 +44,7 @@ const VOTE_WAITING: i32 = -5;
 pub enum Change {
     Live(Live),
     History(Vec<Record>),
+    Fixes(Vec<Fix>),
     /// Something worth a system notification.
     Notify { title: String, body: String },
 }
@@ -78,6 +81,7 @@ struct Shared {
     settings: Settings,
     live: Live,
     history: Vec<Record>,
+    fixes: Vec<Fix>,
     tracking: Tracking,
 }
 
@@ -229,6 +233,7 @@ impl Engine {
             settings: store.settings(),
             live: Live::default(),
             history,
+            fixes: fixes::load(&store),
             tracking,
         };
         Self {

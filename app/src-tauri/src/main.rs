@@ -14,7 +14,7 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 
 use engine::{Change, Engine};
-use model::{Live, Record, Settings};
+use model::{Fix, Live, Record, Settings};
 use prr::ado::{AdoClient, PrFilter};
 use store::Store;
 
@@ -114,6 +114,28 @@ fn retry_review(engine: Shared, pr_id: u64) -> Result<(), String> {
 #[tauri::command]
 async fn apply_vote(engine: Shared<'_>, record_id: String) -> Result<(), String> {
     engine.apply_vote(&record_id).await.map_err(err)
+}
+
+#[tauri::command]
+fn get_fixes(engine: Shared) -> Vec<Fix> {
+    engine.fixes()
+}
+
+/// Has Claude prepare a fix for chosen issues. Nothing is pushed by this.
+#[tauri::command]
+async fn start_fix(engine: Shared<'_>, record_id: String, issues: Vec<usize>) -> Result<String, String> {
+    engine.start_fix(&record_id, &issues).map_err(err)
+}
+
+/// Commits and pushes a fix the user has read and approved.
+#[tauri::command]
+async fn push_fix(engine: Shared<'_>, fix_id: String) -> Result<(), String> {
+    engine.push_fix(&fix_id).await.map_err(err)
+}
+
+#[tauri::command(async)]
+fn discard_fix(engine: Shared, fix_id: String) -> Result<(), String> {
+    engine.discard_fix(&fix_id).map_err(err)
 }
 
 #[tauri::command(async)]
@@ -288,6 +310,9 @@ fn main() {
                         Change::History(history) => {
                             let _ = handle.emit("history", history);
                         }
+                        Change::Fixes(fixes) => {
+                            let _ = handle.emit("fixes", fixes);
+                        }
                         Change::Notify { title, body } => {
                             use tauri_plugin_notification::NotificationExt;
                             let _ = handle.notification().builder().title(title).body(body).show();
@@ -317,6 +342,10 @@ fn main() {
             check_now,
             retry_review,
             apply_vote,
+            get_fixes,
+            start_fix,
+            push_fix,
+            discard_fix,
             has_pat,
             test_connection,
             list_people,

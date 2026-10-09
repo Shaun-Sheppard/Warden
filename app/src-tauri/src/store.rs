@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use serde::{de::DeserializeOwned, Serialize};
 use std::path::PathBuf;
 
-use crate::model::{Record, Settings, Tracking};
+use crate::model::{Fix, Record, Settings, Tracking};
 
 /// JSON files in the app's data directory.
 pub struct Store {
@@ -51,6 +51,14 @@ impl Store {
 
     pub fn save_history(&self, history: &[Record]) -> Result<()> {
         self.write("history.json", &history)
+    }
+
+    pub fn fixes(&self) -> Vec<Fix> {
+        self.read("fixes.json")
+    }
+
+    pub fn save_fixes(&self, fixes: &[Fix]) -> Result<()> {
+        self.write("fixes.json", &fixes)
     }
 
     pub fn tracking(&self) -> Tracking {

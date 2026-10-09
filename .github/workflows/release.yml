@@ -46,8 +46,37 @@ jobs:
         working-directory: app
         run: npm ci
 
-      # The builds are unsigned (macOS is ad-hoc signed), so both systems
-      # warn on first launch; the README explains how to open the app.
+      # macOS: sign with the project's self-signed certificate. It does not
+      # satisfy Gatekeeper, but it gives every release the same identity, so
+      # the Keychain's "Always Allow" survives updates. Without the secrets
+      # the build falls back to an ad-hoc signature.
+      - name: Set up code signing (macOS)
+        if: runner.os == 'macOS'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ -z "$MACOS_CERTIFICATE" ]; then
+            echo "No signing certificate configured; building with an ad-hoc signature."
+            exit 0
+          fi
+          KEYCHAIN="$RUNNER_TEMP/warden-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(/usr/bin/openssl rand -hex 16)"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          # Trust it for code signing on this throwaway machine, in case codesign insists.
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain app/src-tauri/signing/warden-codesign.crt || true
+          IDENTITY="$(security find-identity -p codesigning "$KEYCHAIN" | awk '/Warden Self-Signed/ { print $2; exit }')"
+          test -n "$IDENTITY"
+          echo "APPLE_SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      # Both systems still warn on first launch; the README explains how to open the app.
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -71,3 +100,10 @@ jobs:
           updaterJsonPreferNsis: true
           releaseDraft: false
           prerelease: false
+
+      - name: Show the app's signing identity (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          APP="$(find target -path '*bundle/macos/Warden.app' -maxdepth 6 | head -1)"
+          codesign -d -r- "$APP" 2>&1 | grep designated
+          codesign --verify --deep --strict "$APP"

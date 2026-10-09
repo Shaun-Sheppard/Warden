@@ -197,6 +197,62 @@ pub struct Claim {
     pub decision: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FixStatus {
+    /// Claude is editing a private copy of the branch.
+    Generating,
+    /// Changes are waiting for the user to approve or discard.
+    Ready,
+    Pushing,
+    /// Committed to the pull request's branch.
+    Pushed,
+    /// Claude decided nothing could be changed safely.
+    NoChanges,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FixIssue {
+    pub severity: String,
+    pub title: String,
+    pub location: String,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FixFile {
+    pub path: String,
+    pub additions: u32,
+    pub deletions: u32,
+}
+
+/// A fix Claude prepared for issues the user picked from a review. Nothing
+/// reaches the repository until the user approves the diff.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Fix {
+    pub id: String,
+    pub record_id: String,
+    pub pr: PrInfo,
+    pub status: FixStatus,
+    pub issues: Vec<FixIssue>,
+    /// The branch commit the fix was made on top of.
+    pub base_commit: Option<String>,
+    pub diff: String,
+    /// The diff was too large to keep in full.
+    pub diff_truncated: bool,
+    pub files: Vec<FixFile>,
+    /// Claude's own account of what it did and did not fix.
+    pub report: String,
+    pub error: Option<String>,
+    /// The commit that was pushed.
+    pub commit: Option<String>,
+    pub started_at: DateTime<Utc>,
+    pub finished_at: Option<DateTime<Utc>>,
+    pub lines: Vec<LogLine>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Tracked {
     /// Source commit that was reviewed.

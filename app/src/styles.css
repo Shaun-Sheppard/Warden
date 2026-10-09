@@ -178,6 +178,20 @@ button.section-head:hover { background: var(--hover); }
 .issue-row { padding: 14px 18px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
 section[id^="sec-"] { scroll-margin-top: 16px; }
 
+/* Fixes */
+.fixes { padding: 24px; display: flex; flex-direction: column; gap: 16px; max-width: 1000px; }
+.fix-bar { padding: 14px 18px; display: flex; align-items: center; gap: 16px; }
+input[type="checkbox"] { accent-color: var(--accent); width: 14px; height: 14px; margin: 0; flex: none; transform: translateY(2px); }
+.diff-file { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--term); }
+.diff-file summary { display: flex; justify-content: space-between; gap: 12px; padding: 8px 12px; cursor: pointer; background: var(--raise); font-size: 12px; list-style: none; }
+.diff-file summary::-webkit-details-marker { display: none; }
+pre.diff { margin: 0; padding: 6px 0; font-size: 12px; line-height: 1.6; overflow: auto; max-height: 420px; }
+.diff-line { display: block; padding: 0 12px; white-space: pre; min-width: max-content; }
+.diff-line.add { background: color-mix(in oklab, var(--ok) 16%, transparent); }
+.diff-line.del { background: color-mix(in oklab, var(--critical) 16%, transparent); }
+.diff-line.hunk { color: var(--faint); padding-top: 4px; padding-bottom: 4px; }
+.badge-soft .spinner { margin-right: 6px; }
+
 /* Settings and setup */
 .settings { padding: 24px 24px 48px; max-width: 840px; display: flex; flex-direction: column; gap: 14px; }
 .setting-group { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 24px; padding: 22px 24px; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--card-sh); }

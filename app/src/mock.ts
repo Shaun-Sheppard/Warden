@@ -1,6 +1,6 @@
 // Sample data and a scripted "live review" for working on the UI in a browser.
 import type { Api } from "./api";
-import type { HistoryRecord, Issue, Live, LogLine, PrInfo, Review, Settings } from "./types";
+import type { Fix, HistoryRecord, Issue, Live, LogLine, PrInfo, Review, Settings } from "./types";
 
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
 
@@ -142,6 +142,55 @@ setInterval(() => {
   liveHandlers.forEach((h) => h(live()));
 }, 1400);
 
+const SAMPLE_DIFF = `diff --git a/src/Refunds/IdempotencyStore.cs b/src/Refunds/IdempotencyStore.cs
+index 3f1c2aa..9b7d4e1 100644
+--- a/src/Refunds/IdempotencyStore.cs
++++ b/src/Refunds/IdempotencyStore.cs
+@@ -38,7 +38,7 @@ public class IdempotencyStore
+     public async Task<CachedRefund?> FindAsync(string merchantId, string key)
+     {
+         var cached = await _db.Keys
+-            .FirstOrDefaultAsync(k => k.Value == key);
++            .FirstOrDefaultAsync(k => k.MerchantId == merchantId && k.Value == key);
+         return cached?.Response;
+     }
+ }
+diff --git a/tests/Refunds/IdempotencyTests.cs b/tests/Refunds/IdempotencyTests.cs
+index 77aa010..c21e9d3 100644
+--- a/tests/Refunds/IdempotencyTests.cs
++++ b/tests/Refunds/IdempotencyTests.cs
+@@ -52,3 +52,12 @@ public class IdempotencyTests
+     }
++
++    [Fact]
++    public async Task Same_key_from_another_merchant_is_not_returned()
++    {
++        await _store.SaveAsync("merchant-a", "key-1", Refund(10));
++
++        Assert.Null(await _store.FindAsync("merchant-b", "key-1"));
++    }
+ }
+`;
+
+function sampleFix(status: Fix["status"]): Fix {
+  return {
+    id: `4821-${Date.now()}`, recordId: "4821-live", pr: live4821, status,
+    issues: [{ severity: "major", title: "Idempotency key lookup not scoped to merchant", location: "IdempotencyStore.cs:41", body: "" }],
+    baseCommit: "4c7e01b", diff: status === "generating" ? "" : SAMPLE_DIFF, diffTruncated: false,
+    files: status === "generating" ? [] : [
+      { path: "src/Refunds/IdempotencyStore.cs", additions: 1, deletions: 1 },
+      { path: "tests/Refunds/IdempotencyTests.cs", additions: 9, deletions: 0 },
+    ],
+    report: status === "generating" ? "" : "Fixed: the lookup now filters by merchant id as well as the key, and a test covers two merchants using the same key.",
+    error: null, commit: null, startedAt: new Date().toISOString(), finishedAt: status === "generating" ? null : new Date().toISOString(),
+    lines: [{ time: now(), kind: "cmd", text: "Getting the latest code for the branch" }, { time: now(), kind: "cmd", text: "Claude is fixing 1 issue(s)" }, { time: now(), kind: "info", text: "Read src/Refunds/IdempotencyStore.cs" }],
+  };
+}
+
+let fixes: Fix[] = location.search.includes("fix") ? [sampleFix("ready")] : [];
+const fixHandlers = new Set<(f: Fix[]) => void>();
+const setFixes = (next: Fix[]) => { fixes = next; fixHandlers.forEach((h) => h(fixes)); };
+
 const later = <T,>(value: T, ms = 150) => new Promise<T>((resolve) => setTimeout(() => resolve(value), ms));
 
 export const mockApi: Api = {
@@ -165,6 +214,20 @@ export const mockApi: Api = {
     historyHandlers.forEach((h) => h(history));
     return later(undefined, 600);
   },
+  getFixes: () => later(fixes),
+  startFix: () => {
+    const fix = sampleFix("generating");
+    setFixes([fix, ...fixes]);
+    setTimeout(() => setFixes(fixes.map((f) => (f.id === fix.id ? { ...sampleFix("ready"), id: fix.id } : f))), 3000);
+    return later(fix.id);
+  },
+  pushFix: (fixId) => {
+    setFixes(fixes.map((f) => (f.id === fixId ? { ...f, status: "pushing" } : f)));
+    setTimeout(() => setFixes(fixes.map((f) => (f.id === fixId ? { ...f, status: "pushed", commit: "9d21f6a03b" } : f))), 1200);
+    return later(undefined, 1200);
+  },
+  discardFix: (fixId) => { setFixes(fixes.filter((f) => f.id !== fixId)); return later(undefined); },
+  onFixes: (h) => { fixHandlers.add(h); return () => fixHandlers.delete(h); },
   hasPat: () => later(settings.setupComplete),
   testConnection: (organization) =>
     organization ? later({ user: "Shaun Sheppard", projects: ["Payments", "Customer Web", "Platform", "Internal Tools"], projectsNote: null }, 700)

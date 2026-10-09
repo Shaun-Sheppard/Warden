@@ -150,6 +150,8 @@ struct ConnectionUser {
     id: String,
     #[serde(default)]
     provider_display_name: Option<String>,
+    #[serde(default)]
+    properties: Value,
 }
 
 /// A work item linked to a pull request, with its text fields as plain text.
@@ -401,7 +403,8 @@ impl AdoClient {
         Ok(Identity {
             id: user.id,
             display_name: user.provider_display_name.unwrap_or_default(),
-            ..Default::default()
+            // The sign-in address, when Azure DevOps includes it.
+            unique_name: user.properties["Account"]["$value"].as_str().unwrap_or_default().to_string(),
         })
     }
 

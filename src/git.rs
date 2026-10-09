@@ -205,6 +205,114 @@ fn clone(url: &str, dir: &Path, auth: Option<&GitAuth>) -> Result<()> {
         .with_context(|| format!("Could not move the clone into {}", dir.display()))
 }
 
+fn run(mut cmd: Command, what: &str) -> Result<String> {
+    let out = cmd.output().map_err(|e| anyhow!("Could not run git {what}: {e}"))?;
+    if !out.status.success() {
+        bail!("git {what} failed:\n{}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Adds a separate working directory at `rev`, sharing `repo`'s objects.
+/// Used so a fix can be prepared without disturbing the clone reviews run in.
+pub fn worktree_add(repo: &Path, dir: &Path, rev: &str) -> Result<()> {
+    if let Some(parent) = dir.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("Could not create {}", parent.display()))?;
+    }
+    let _ = git(repo).args(["worktree", "prune"]).output();
+    let mut cmd = git(repo);
+    cmd.args(["worktree", "add", "--detach", "--force"]).arg(dir).arg(rev);
+    run(cmd, "worktree add").map(|_| ())
+}
+
+/// Removes a working directory added with `worktree_add`, with anything in it.
+pub fn worktree_remove(repo: &Path, dir: &Path) {
+    let mut cmd = git(repo);
+    cmd.args(["worktree", "remove", "--force"]).arg(dir);
+    let _ = cmd.output();
+    let _ = std::fs::remove_dir_all(dir);
+    let _ = git(repo).args(["worktree", "prune"]).output();
+}
+
+/// The commit a working directory is at.
+pub fn head(dir: &Path) -> Result<String> {
+    let mut cmd = git(dir);
+    cmd.args(["rev-parse", "HEAD"]);
+    Ok(run(cmd, "rev-parse")?.trim().to_string())
+}
+
+/// One changed file in a working directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileChange {
+    pub path: String,
+    pub additions: u32,
+    pub deletions: u32,
+}
+
+/// Everything changed in a working directory since its commit, new files
+/// included, as a unified diff plus per-file counts. Stages the changes.
+pub fn pending_changes(dir: &Path) -> Result<(String, Vec<FileChange>)> {
+    let mut add = git(dir);
+    add.args(["add", "--all"]);
+    run(add, "add")?;
+    let mut diff = git(dir);
+    diff.args(["diff", "--cached", "--no-color", "--no-ext-diff"]);
+    let text = run(diff, "diff")?;
+    let mut stat = git(dir);
+    stat.args(["diff", "--cached", "--numstat"]);
+    let files = run(stat, "diff --numstat")?
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(3, '\t');
+            // Binary files report "-" for both counts.
+            let additions = parts.next()?.parse().unwrap_or(0);
+            let deletions = parts.next()?.parse().unwrap_or(0);
+            Some(FileChange { path: parts.next()?.to_string(), additions, deletions })
+        })
+        .collect();
+    Ok((text, files))
+}
+
+/// Commits the staged changes and returns the new commit id.
+pub fn commit(dir: &Path, name: &str, email: &str, message: &str) -> Result<String> {
+    let mut cmd = git(dir);
+    cmd.arg("-c")
+        .arg(format!("user.name={name}"))
+        .arg("-c")
+        .arg(format!("user.email={email}"))
+        .args(["-c", "commit.gpgsign=false", "commit", "--quiet", "--no-verify", "-m", message]);
+    run(cmd, "commit")?;
+    head(dir)
+}
+
+/// The commit `branch` is at on the remote right now, if it exists.
+pub fn remote_head(repo: &Path, branch: &str, auth: Option<&GitAuth>) -> Result<Option<String>> {
+    let mut cmd = git(repo);
+    cmd.args(["ls-remote", "origin"]).arg(format!("refs/heads/{branch}"));
+    if let Some(auth) = auth {
+        auth.apply(&mut cmd);
+    }
+    Ok(run(cmd, "ls-remote")?.split_whitespace().next().map(str::to_string))
+}
+
+/// Pushes the working directory's commit to `branch`. Never forces: if the
+/// branch has moved on, the push is refused.
+pub fn push_head(dir: &Path, branch: &str, auth: Option<&GitAuth>) -> Result<()> {
+    let mut cmd = git(dir);
+    cmd.args(["push", "--quiet", "origin"]).arg(format!("HEAD:refs/heads/{branch}"));
+    if let Some(auth) = auth {
+        auth.apply(&mut cmd);
+    }
+    run(cmd, "push").map(|_| ())
+}
+
+/// The user's own git email, if they have one configured.
+pub fn configured_email() -> Option<String> {
+    let out = Command::new("git").args(["config", "--get", "user.email"]).output().ok()?;
+    let email = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !email.is_empty()).then_some(email)
+}
+
 /// Size of the change a PR makes: (files changed, lines added, lines deleted).
 pub fn diff_stat(repo: &Path, target: &str, source: &str) -> Option<(u32, u32, u32)> {
     let range = format!("origin/{target}...origin/{source}");

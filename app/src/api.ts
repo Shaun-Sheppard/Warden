@@ -6,7 +6,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { mockApi } from "./mock";
-import type { ClaudeStatus, Connection, HistoryRecord, Legacy, Live, Settings } from "./types";
+import type { ClaudeStatus, Connection, Fix, HistoryRecord, Legacy, Live, Settings } from "./types";
 
 export interface Api {
   getSettings(): Promise<Settings>;
@@ -16,6 +16,13 @@ export interface Api {
   checkNow(): Promise<void>;
   retryReview(prId: number): Promise<void>;
   applyVote(recordId: string): Promise<void>;
+  getFixes(): Promise<Fix[]>;
+  /** Has Claude prepare a fix for the chosen issues (by position in the review). Pushes nothing. */
+  startFix(recordId: string, issues: number[]): Promise<string>;
+  /** Commits and pushes a fix the user has approved. */
+  pushFix(fixId: string): Promise<void>;
+  discardFix(fixId: string): Promise<void>;
+  onFixes(handler: (fixes: Fix[]) => void): () => void;
   hasPat(): Promise<boolean>;
   testConnection(organization: string, pat: string | null): Promise<Connection>;
   listPeople(organization: string, projects: string[]): Promise<string[]>;
@@ -57,6 +64,11 @@ const tauriApi: Api = {
   checkNow: () => invoke("check_now"),
   retryReview: (prId) => invoke("retry_review", { prId }),
   applyVote: (recordId) => invoke("apply_vote", { recordId }),
+  getFixes: () => invoke("get_fixes"),
+  startFix: (recordId, issues) => invoke("start_fix", { recordId, issues }),
+  pushFix: (fixId) => invoke("push_fix", { fixId }),
+  discardFix: (fixId) => invoke("discard_fix", { fixId }),
+  onFixes: (handler) => subscribe("fixes", handler),
   hasPat: () => invoke("has_pat"),
   testConnection: (organization, pat) => invoke("test_connection", { organization, pat }),
   listPeople: (organization, projects) => invoke("list_people", { organization, projects }),
