@@ -81,7 +81,7 @@ input::placeholder { color: var(--faint); }
 .tint-critical { background: color-mix(in oklab, var(--critical) 14%, transparent); }
 .tint-major { background: color-mix(in oklab, var(--major) 14%, transparent); }
 .banner { margin: 16px 24px 0; padding: 12px 14px; border-radius: 12px; display: flex; gap: 12px; align-items: flex-start; line-height: 1.5; }
-.banner.slim { padding: 6px 12px; align-items: center; border-radius: 10px; }
+.banner.slim { padding: 6px 12px; align-items: center; border-radius: 10px; flex: none; }
 .banner.slim .btn { height: 24px; }
 .banner.slim .grow { white-space: nowrap; }
 .banner .grow { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-word; }

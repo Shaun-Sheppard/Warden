@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type AvailableUpdate } from "./api";
-import { Setup, SettingsView } from "./forms";
+import { Setup, SettingsView, type UpdateOffer } from "./forms";
 import type { ClaudeStatus, HistoryRecord, Live, Settings } from "./types";
 import { CheckButton, Segmented } from "./ui";
 import { ago, pollLabel } from "./util";
@@ -12,26 +12,22 @@ type Filter = "all" | "approved" | "rejected" | "failed";
 const UPDATE_CHECK_MS = 6 * 60 * 60 * 1000;
 
 /** Offers a newer release; installing is always the user's choice. */
-function UpdateBanner({ update, reviewing, onDismiss }: { update: AvailableUpdate; reviewing: boolean; onDismiss: () => void }) {
-  const [state, setState] = useState<{ phase: "idle" | "installing" | "error"; percent: number | null; error: string }>({ phase: "idle", percent: null, error: "" });
-  const install = () => {
-    setState({ phase: "installing", percent: null, error: "" });
-    api.installUpdate((percent) => setState({ phase: "installing", percent, error: "" }))
-      .catch((e) => setState({ phase: "error", percent: null, error: String(e) }));
-  };
+/** Offers a newer release; installing is always the user's choice. */
+function UpdateBanner({ offer, onDismiss }: { offer: UpdateOffer; onDismiss: () => void }) {
+  if (!offer.update) return null;
   return (
     <div className="banner slim tint-ok" role="status">
-      <b className="tone-ok">Warden {update.version} is available</b>
+      <b className="tone-ok">Warden {offer.update.version} is available</b>
       {/* Deliberately no release notes: the bar only says an update exists. */}
       <span className="grow ellipsis">
-        {state.phase === "installing" ? `Downloading${state.percent === null ? "…" : ` ${state.percent}%`}`
-          : state.phase === "error" ? <span className="tone-critical selectable" title={state.error}>Update failed: {state.error}</span>
-          : reviewing ? "Available once the current review finishes"
+        {offer.phase === "installing" ? `Downloading${offer.percent === null ? "…" : ` ${offer.percent}%`}`
+          : offer.phase === "error" ? <span className="tone-critical selectable" title={offer.error}>Update failed: {offer.error}</span>
+          : offer.reviewing ? "Available once the current review finishes"
           : ""}
       </span>
-      {state.phase !== "installing" && (
+      {offer.phase !== "installing" && (
         <>
-          <button className="btn primary" onClick={install} disabled={reviewing}>{state.phase === "error" ? "Try again" : "Update and restart"}</button>
+          <button className="btn primary" onClick={offer.install} disabled={offer.reviewing}>{offer.phase === "error" ? "Try again" : "Update and restart"}</button>
           <button className="btn ghost" onClick={onDismiss}>Later</button>
         </>
       )}
@@ -70,18 +66,32 @@ export default function App() {
   const notificationsOn = useRef(true);
   notificationsOn.current = settings?.notifications ?? true;
 
-  const lookForUpdate = () =>
-    api.checkForUpdate().then((found) => {
-      setUpdate(found);
-      if (found) setUpdateHidden(false);
-      // Once per version, so the offer is seen even when the window is closed.
-      if (found && notificationsOn.current && notifiedVersion.current !== found.version) {
-        notifiedVersion.current = found.version;
-        api.notify(`Warden ${found.version} is available`, "Open Warden to update.");
-      }
-    }, () => {
-      // Offline or GitHub unreachable: stay quiet and try again later.
-    });
+  const [install, setInstall] = useState<{ phase: "idle" | "installing" | "error"; percent: number | null; error: string }>({ phase: "idle", percent: null, error: "" });
+
+  const [lastUpdateCheck, setLastUpdateCheck] = useState<Date | null>(null);
+
+  /** Checks GitHub for a newer release. Rejects if the check itself fails. */
+  const checkForUpdate = async () => {
+    const found = await api.checkForUpdate();
+    setLastUpdateCheck(new Date());
+    setUpdate(found);
+    if (found) setUpdateHidden(false);
+    // Once per version, so the offer is seen even when the window is closed.
+    if (found && notificationsOn.current && notifiedVersion.current !== found.version) {
+      notifiedVersion.current = found.version;
+      api.notify(`Warden ${found.version} is available`, "Open Warden to update.");
+    }
+    return found;
+  };
+  // Background checks stay quiet when offline or GitHub is unreachable, and try again later.
+  const lookForUpdate = () => {
+    checkForUpdate().catch(() => {});
+  };
+  const startInstall = () => {
+    setInstall({ phase: "installing", percent: null, error: "" });
+    api.installUpdate((percent) => setInstall({ phase: "installing", percent, error: "" }))
+      .catch((e) => setInstall({ phase: "error", percent: null, error: String(e) }));
+  };
   useEffect(() => {
     lookForUpdate();
     const timer = setInterval(lookForUpdate, UPDATE_CHECK_MS);
@@ -140,6 +150,8 @@ export default function App() {
       </div>
     );
   }
+
+  const offer: UpdateOffer = { update, lastChecked: lastUpdateCheck, ...install, reviewing: live.status === "reviewing", install: startInstall };
 
   const open = (recordId: string) => {
     setSelected(recordId);
@@ -231,8 +243,9 @@ export default function App() {
             </>
           )}
         </header>
+        {/* Outside the scrolling area, so it is visible wherever the page is scrolled to. */}
+        {!updateHidden && <UpdateBanner offer={offer} onDismiss={() => setUpdateHidden(true)} />}
         <div className="body" ref={bodyRef}>
-          {update && !updateHidden && <UpdateBanner update={update} reviewing={reviewing} onDismiss={() => setUpdateHidden(true)} />}
           {saveError && <div className="banner tint-critical" role="alert"><b className="tone-critical">Settings were not saved</b><span className="grow">{saveError}</span></div>}
           {claudeProblem && view !== "settings" && (
             <div className="banner tint-critical" role="alert">
@@ -247,7 +260,7 @@ export default function App() {
           {view === "detail" && (record
             ? <Detail record={record} reviews={byPr.get(record.pr.id) ?? [record]} now={now} onOpen={open} onRetry={() => api.retryReview(record.pr.id).then(() => setView("activity"))} onSettings={() => setView("settings")} />
             : <div className="empty">This review is no longer in the history.</div>)}
-          {view === "settings" && <SettingsView settings={settings} change={change} onRunSetup={() => change({ setupComplete: false })} onUpdateFound={lookForUpdate} />}
+          {view === "settings" && <SettingsView settings={settings} change={change} onRunSetup={() => change({ setupComplete: false })} offer={offer} onCheck={checkForUpdate} />}
         </div>
       </main>
     </div>

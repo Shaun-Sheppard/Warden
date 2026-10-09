@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "./api";
+import { api, type AvailableUpdate } from "./api";
 import type { ClaudeStatus, Settings } from "./types";
 import { Segmented, SwitchRow, TagInput } from "./ui";
 
@@ -188,7 +188,21 @@ function PromptSetting({ settings, change }: { settings: Settings; change: Chang
 }
 
 /** Version, and a manual update check. */
-function About({ onUpdateFound }: { onUpdateFound: () => void }) {
+/** A newer release, and where its installation has got to. Shared by the bar at the top and Settings → About. */
+export interface UpdateOffer {
+  update: AvailableUpdate | null;
+  /** When GitHub was last asked successfully, by the app or by the user. */
+  lastChecked: Date | null;
+  phase: "idle" | "installing" | "error";
+  percent: number | null;
+  error: string;
+  /** A review is running; installing waits until it finishes. */
+  reviewing: boolean;
+  install: () => void;
+}
+
+/** Version, a manual update check, and the update itself when there is one. */
+function About({ offer, onCheck }: { offer: UpdateOffer; onCheck: () => Promise<AvailableUpdate | null> }) {
   const [version, setVersion] = useState("");
   const [status, setStatus] = useState<{ text: string; tone: string }>({ text: "", tone: "tone-faint" });
   const [busy, setBusy] = useState(false);
@@ -199,13 +213,8 @@ function About({ onUpdateFound }: { onUpdateFound: () => void }) {
     setBusy(true);
     setStatus({ text: "Checking…", tone: "tone-muted" });
     try {
-      const update = await api.checkForUpdate();
-      if (update) {
-        setStatus({ text: `Version ${update.version} is available`, tone: "tone-ok" });
-        onUpdateFound();
-      } else {
-        setStatus({ text: "You have the latest version", tone: "tone-ok" });
-      }
+      await onCheck();
+      setStatus({ text: "", tone: "tone-faint" });
     } catch (e) {
       setStatus({ text: `Could not check: ${e}`, tone: "tone-critical" });
     }
@@ -214,17 +223,36 @@ function About({ onUpdateFound }: { onUpdateFound: () => void }) {
   return (
     <div className="fields">
       <span className="mono selectable">Warden {version}</span>
+      {offer.update && (
+        <div className="warning tint-ok" role="status">
+          <b className="tone-ok">Warden {offer.update.version} is available</b>
+          {offer.phase === "installing" ? (
+            <span><span className="spinner" aria-hidden /> Downloading{offer.percent === null ? "…" : ` ${offer.percent}%`} · Warden will restart when it is ready.</span>
+          ) : (
+            <div className="inline" style={{ flexWrap: "wrap" }}>
+              <button className="btn primary" onClick={offer.install} disabled={offer.reviewing}>{offer.phase === "error" ? "Try again" : "Update and restart"}</button>
+              {offer.reviewing && <span className="help">Available once the current review finishes</span>}
+            </div>
+          )}
+          {offer.phase === "error" && <span className="tone-critical selectable" role="alert">Update failed: {offer.error}</span>}
+        </div>
+      )}
       <div className="inline">
-        <button className="btn" onClick={check} disabled={busy}>Check for updates</button>
-        <span className={`help ${status.tone}`} role="status">{status.text}</span>
+        <button className="btn" onClick={check} disabled={busy || offer.phase === "installing"}>Check for updates</button>
+        <span className={`help ${status.text ? status.tone : offer.update ? "tone-faint" : "tone-ok"}`} role="status">
+          {status.text || (offer.lastChecked && !offer.update ? "You have the latest version" : "")}
+        </span>
       </div>
+      {offer.lastChecked && (
+        <span className="help">Last checked {offer.lastChecked.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}</span>
+      )}
       <span className="help">Warden checks GitHub for new releases when it starts and every few hours, and asks before installing one.</span>
     </div>
   );
 }
 
-export function SettingsView({ settings, change, onRunSetup, onUpdateFound }: {
-  settings: Settings; change: Change; onRunSetup: () => void; onUpdateFound: () => void;
+export function SettingsView({ settings, change, onRunSetup, offer, onCheck }: {
+  settings: Settings; change: Change; onRunSetup: () => void; offer: UpdateOffer; onCheck: () => Promise<AvailableUpdate | null>;
 }) {
   const [projectChoices, setProjectChoices] = useState<string[]>([]);
   const [claude, recheck] = useClaudeStatus(settings.cliPath);
@@ -279,7 +307,7 @@ export function SettingsView({ settings, change, onRunSetup, onUpdateFound }: {
 
       <section className="setting-group">
         <div><h2>About</h2><span className="help">Version and updates.</span></div>
-        <About onUpdateFound={onUpdateFound} />
+        <About offer={offer} onCheck={onCheck} />
       </section>
 
       <section className="setting-group">
