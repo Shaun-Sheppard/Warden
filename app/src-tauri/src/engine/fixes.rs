@@ -104,6 +104,9 @@ impl Engine {
 
     /// Starts preparing a fix for the chosen issues of a review. Returns its id.
     pub fn start_fix(self: &Arc<Self>, record_id: &str, issue_indexes: &[usize]) -> Result<String> {
+        if self.updating() {
+            anyhow::bail!("An update is being installed. Start the fix after Warden restarts.");
+        }
         let fix = {
             let mut shared = self.shared.lock().unwrap();
             if shared.fixes.iter().any(|f| f.status == FixStatus::Generating) {
@@ -283,6 +286,9 @@ impl Engine {
         let fix = self.fix(id)?;
         if fix.status != FixStatus::Ready {
             anyhow::bail!("This fix is not waiting for approval.");
+        }
+        if self.updating() {
+            anyhow::bail!("An update is being installed. Push the fix after Warden restarts.");
         }
         let settings = self.settings();
         if settings.dry_run {

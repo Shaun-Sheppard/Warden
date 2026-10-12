@@ -96,6 +96,9 @@ pub struct Engine {
     forced: Mutex<std::collections::BTreeSet<u64>>,
     /// The setup problem the user was last notified about, so it is said once.
     alerted: Mutex<Option<String>>,
+    /// An update is about to be installed: start no new work, so the restart
+    /// cannot cut a review or a fix off half-way.
+    updating: std::sync::atomic::AtomicBool,
 }
 
 /// Whether a review failed because of this machine's setup, not because of
@@ -268,6 +271,7 @@ impl Engine {
             me: Mutex::new(None),
             forced: Mutex::new(Default::default()),
             alerted: Mutex::new(None),
+            updating: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -327,6 +331,31 @@ impl Engine {
         self.emit_live();
         self.wake.notify_one();
         Ok(settings)
+    }
+
+    /// Whether a review or a fix is in flight right now.
+    pub fn busy(&self) -> bool {
+        let shared = self.shared.lock().unwrap();
+        shared.live.current.as_ref().is_some_and(|c| !c.done)
+            || shared.fixes.iter().any(|f| matches!(f.status, FixStatus::Generating | FixStatus::Pushing))
+    }
+
+    fn updating(&self) -> bool {
+        self.updating.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Stops new reviews and fixes from starting, ahead of installing an
+    /// update. Returns whether something is still in flight; the update must
+    /// wait until `busy` is false.
+    pub fn begin_update(&self) -> bool {
+        self.updating.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.busy()
+    }
+
+    /// The update was abandoned; carry on as normal.
+    pub fn end_update(&self) {
+        self.updating.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.wake.notify_one();
     }
 
     pub fn check_now(&self) {
@@ -406,7 +435,7 @@ impl Engine {
 
     async fn cycle(self: &Arc<Self>) -> Result<()> {
         let settings = self.settings();
-        if !settings.setup_complete || settings.paused || settings.organization.trim().is_empty() {
+        if !settings.setup_complete || settings.paused || settings.organization.trim().is_empty() || self.updating() {
             return Ok(());
         }
         self.shared.lock().unwrap().live.checking = true;
@@ -467,7 +496,7 @@ impl Engine {
         for pr in todo {
             // Settings may have changed while the previous review ran.
             let settings = self.settings();
-            if settings.paused {
+            if settings.paused || self.updating() {
                 break;
             }
             {
@@ -1099,6 +1128,34 @@ mod tests {
         let attempts = |id: u64| engine.shared.lock().unwrap().tracking.prs[&id].attempts;
         assert_eq!(attempts(1), 0, "a setup problem is not the pull request's fault");
         assert_eq!(attempts(2), MAX_ATTEMPTS, "a real review failure still counts");
+    }
+
+    #[test]
+    fn an_update_waits_for_work_in_flight_and_blocks_new_work() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = Arc::new(Engine::new(Store::new(tmp.path().to_path_buf()), Box::new(|_| {})));
+        assert!(!engine.busy());
+        assert!(!engine.begin_update(), "nothing in flight, so the update can go ahead");
+        assert!(engine.updating());
+        assert!(engine.start_fix("any", &[0]).unwrap_err().to_string().contains("update is being installed"));
+        engine.end_update();
+        assert!(!engine.updating());
+
+        // A review in progress makes it busy until that review is done.
+        let info = pr_info(&pr(7, "Ann", "c", false), &AdoClient::new("org", "", "pat").unwrap());
+        engine.shared.lock().unwrap().live.current = Some(Current {
+            pr: info,
+            step: 2,
+            started_at: Utc::now(),
+            lines: vec![],
+            done: false,
+            record_id: None,
+            failed: vec![],
+            skipped: vec![],
+        });
+        assert!(engine.begin_update(), "the review must be allowed to finish first");
+        engine.shared.lock().unwrap().live.current.as_mut().unwrap().done = true;
+        assert!(!engine.busy());
     }
 
     #[test]

@@ -35,12 +35,17 @@ export interface Api {
   notify(title: string, body: string): void;
   /** The newer release, if there is one. */
   checkForUpdate(): Promise<AvailableUpdate | null>;
-  /** Downloads and installs the update found by `checkForUpdate`, then restarts. */
-  installUpdate(onProgress: (percent: number | null) => void): Promise<void>;
+  /**
+   * Downloads the update found by `checkForUpdate`, waits for any review or
+   * fix in flight to finish, then installs it and restarts.
+   */
+  installUpdate(onStage: (stage: UpdateStage) => void): Promise<void>;
   onLive(handler: (live: Live) => void): () => void;
   onHistory(handler: (history: HistoryRecord[]) => void): () => void;
   onSettings(handler: (settings: Settings) => void): () => void;
 }
+
+export type UpdateStage = { stage: "downloading"; percent: number | null } | { stage: "waiting" } | { stage: "installing" };
 
 export interface AvailableUpdate {
   version: string;
@@ -82,18 +87,33 @@ const tauriApi: Api = {
     pendingUpdate = await check();
     return pendingUpdate ? { version: pendingUpdate.version, notes: pendingUpdate.body ?? "" } : null;
   },
-  installUpdate: async (onProgress) => {
+  installUpdate: async (onStage) => {
     if (!pendingUpdate) throw new Error("No update is ready to install.");
-    let total = 0;
-    let received = 0;
-    await pendingUpdate.downloadAndInstall((event) => {
-      if (event.event === "Started") total = event.data.contentLength ?? 0;
-      if (event.event === "Progress") {
-        received += event.data.chunkLength;
-        onProgress(total ? Math.min(100, Math.round((received / total) * 100)) : null);
+    // From here no new review or fix starts, so the restart cannot cut one off.
+    await invoke("begin_update");
+    try {
+      let total = 0;
+      let received = 0;
+      onStage({ stage: "downloading", percent: null });
+      await pendingUpdate.download((event) => {
+        if (event.event === "Started") total = event.data.contentLength ?? 0;
+        if (event.event === "Progress") {
+          received += event.data.chunkLength;
+          onStage({ stage: "downloading", percent: total ? Math.min(100, Math.round((received / total) * 100)) : null });
+        }
+      });
+      // Anything already running is allowed to finish first.
+      while (await invoke<boolean>("is_busy")) {
+        onStage({ stage: "waiting" });
+        await new Promise((resolve) => setTimeout(resolve, 2000));
       }
-    });
-    await relaunch();
+      onStage({ stage: "installing" });
+      await pendingUpdate.install();
+      await relaunch();
+    } catch (e) {
+      await invoke("end_update");
+      throw e;
+    }
   },
   onLive: (handler) => subscribe("live", handler),
   onHistory: (handler) => subscribe("history", handler),

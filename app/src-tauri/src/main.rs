@@ -121,6 +121,23 @@ async fn apply_vote(engine: Shared<'_>, record_id: String) -> Result<(), String>
     engine.apply_vote(&record_id).await.map_err(err)
 }
 
+/// Called before installing an update: holds new work back and says whether
+/// a review or fix is still in flight.
+#[tauri::command]
+fn begin_update(engine: Shared) -> bool {
+    engine.begin_update()
+}
+
+#[tauri::command]
+fn is_busy(engine: Shared) -> bool {
+    engine.busy()
+}
+
+#[tauri::command]
+fn end_update(engine: Shared) {
+    engine.end_update();
+}
+
 #[tauri::command]
 fn get_fixes(engine: Shared) -> Vec<Fix> {
     engine.fixes()
@@ -350,6 +367,9 @@ fn main() {
             check_now,
             retry_review,
             apply_vote,
+            begin_update,
+            is_busy,
+            end_update,
             get_fixes,
             start_fix,
             push_fix,

@@ -241,8 +241,11 @@ export const mockApi: Api = {
   appVersion: () => later("0.4.0"),
   notify: () => {},
   checkForUpdate: () => later(location.search.includes("update") ? { version: "0.3.0", notes: "Faster checks and a fix for long branch names." } : null, 500),
-  installUpdate: async (onProgress) => {
-    for (let p = 0; p <= 100; p += 20) { onProgress(p); await later(undefined, 250); }
+  installUpdate: async (onStage) => {
+    for (let p = 0; p <= 100; p += 20) { onStage({ stage: "downloading", percent: p }); await later(undefined, 250); }
+    onStage({ stage: "waiting" });
+    await later(undefined, 2500);
+    onStage({ stage: "installing" });
   },
   onLive: (h) => { liveHandlers.add(h); return () => liveHandlers.delete(h); },
   onHistory: (h) => { historyHandlers.add(h); return () => historyHandlers.delete(h); },

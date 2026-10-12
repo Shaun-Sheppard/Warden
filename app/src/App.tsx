@@ -21,9 +21,9 @@ function UpdateBanner({ offer, onDismiss }: { offer: UpdateOffer; onDismiss: () 
       <b className="tone-ok">Warden {offer.update.version} is available</b>
       {/* Deliberately no release notes: the bar only says an update exists. */}
       <span className="grow ellipsis">
-        {offer.phase === "installing" ? `Downloading${offer.percent === null ? "…" : ` ${offer.percent}%`}`
+        {offer.phase === "installing" ? offer.progress
           : offer.phase === "error" ? <span className="tone-critical selectable" title={offer.error}>Update failed: {offer.error}</span>
-          : offer.reviewing ? "Available once the current review finishes"
+          : offer.reviewing ? "Available once the review or fix in progress finishes"
           : ""}
       </span>
       {offer.phase !== "installing" && (
@@ -68,7 +68,7 @@ export default function App() {
   const notificationsOn = useRef(true);
   notificationsOn.current = settings?.notifications ?? true;
 
-  const [install, setInstall] = useState<{ phase: "idle" | "installing" | "error"; percent: number | null; error: string }>({ phase: "idle", percent: null, error: "" });
+  const [install, setInstall] = useState<{ phase: "idle" | "installing" | "error"; progress: string; error: string }>({ phase: "idle", progress: "", error: "" });
 
   const [lastUpdateCheck, setLastUpdateCheck] = useState<Date | null>(null);
 
@@ -90,9 +90,13 @@ export default function App() {
     checkForUpdate().catch(() => {});
   };
   const startInstall = () => {
-    setInstall({ phase: "installing", percent: null, error: "" });
-    api.installUpdate((percent) => setInstall({ phase: "installing", percent, error: "" }))
-      .catch((e) => setInstall({ phase: "error", percent: null, error: String(e) }));
+    setInstall({ phase: "installing", progress: "Downloading…", error: "" });
+    api.installUpdate((s) => setInstall({
+      phase: "installing", error: "",
+      progress: s.stage === "downloading" ? `Downloading${s.percent === null ? "…" : ` ${s.percent}%`}`
+        : s.stage === "waiting" ? "Downloaded. Waiting for the work in progress to finish, then installing…"
+        : "Installing…",
+    })).catch((e) => setInstall({ phase: "error", progress: "", error: String(e) }));
   };
   useEffect(() => {
     lookForUpdate();
@@ -161,7 +165,8 @@ export default function App() {
     );
   }
 
-  const offer: UpdateOffer = { update, lastChecked: lastUpdateCheck, ...install, reviewing: live.status === "reviewing", install: startInstall };
+  const offer: UpdateOffer = { update, lastChecked: lastUpdateCheck, ...install, 
+    reviewing: live.status === "reviewing" || fixes.some((f) => f.status === "generating" || f.status === "pushing"), install: startInstall };
 
   const open = (recordId: string) => {
     setSelected(recordId);

@@ -198,9 +198,10 @@ export interface UpdateOffer {
   /** When GitHub was last asked successfully, by the app or by the user. */
   lastChecked: Date | null;
   phase: "idle" | "installing" | "error";
-  percent: number | null;
+  /** What the installation is doing right now, in words. */
+  progress: string;
   error: string;
-  /** A review is running; installing waits until it finishes. */
+  /** A review or fix is in flight; the update cannot be started until it finishes. */
   reviewing: boolean;
   install: () => void;
 }
@@ -231,11 +232,11 @@ function About({ offer, onCheck }: { offer: UpdateOffer; onCheck: () => Promise<
         <div className="warning tint-ok" role="status">
           <b className="tone-ok">Warden {offer.update.version} is available</b>
           {offer.phase === "installing" ? (
-            <span><span className="spinner" aria-hidden /> Downloading{offer.percent === null ? "…" : ` ${offer.percent}%`} · Warden will restart when it is ready.</span>
+            <span><span className="spinner" aria-hidden /> {offer.progress} Warden restarts when it is done.</span>
           ) : (
             <div className="inline" style={{ flexWrap: "wrap" }}>
               <button className="btn solid" onClick={offer.install} disabled={offer.reviewing}>{offer.phase === "error" ? "Try again" : "Update and restart"}</button>
-              {offer.reviewing && <span className="help">Available once the current review finishes</span>}
+              {offer.reviewing && <span className="help">Available once the review or fix in progress finishes</span>}
             </div>
           )}
           {offer.phase === "error" && <span className="tone-critical selectable" role="alert">Update failed: {offer.error}</span>}
