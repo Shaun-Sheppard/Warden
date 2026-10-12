@@ -94,6 +94,17 @@ pub struct Engine {
     me: Mutex<Option<Identity>>,
     /// PRs the user asked to review again, whatever other copies have done.
     forced: Mutex<std::collections::BTreeSet<u64>>,
+    /// The setup problem the user was last notified about, so it is said once.
+    alerted: Mutex<Option<String>>,
+}
+
+/// Whether a review failed because of this machine's setup, not because of
+/// the pull request: Claude Code is signed out, too old, or missing. These
+/// affect every review equally and are fixed by the user, not by retrying.
+pub fn setup_problem(message: &str) -> bool {
+    ["CLI is not signed in", "too old for Warden's safety settings", "was not found on PATH"]
+        .iter()
+        .any(|sign| message.contains(sign))
 }
 
 #[derive(Debug, PartialEq)]
@@ -229,6 +240,19 @@ impl Engine {
         }
         let mut history = store.history();
         prune_history(&mut history);
+        // Earlier versions counted "Claude Code is signed out" against the pull
+        // request and could give up on it. Give those PRs their attempts back.
+        let mut forgiven = false;
+        for (id, tracked) in tracking.prs.iter_mut() {
+            let last_error = history.iter().find(|r| r.pr.id == *id).and_then(|r| r.error.as_deref());
+            if tracked.outcome == Outcome::Failed && tracked.attempts > 0 && last_error.is_some_and(setup_problem) {
+                tracked.attempts = 0;
+                forgiven = true;
+            }
+        }
+        if forgiven {
+            let _ = store.save_tracking(&tracking);
+        }
         let shared = Shared {
             settings: store.settings(),
             live: Live::default(),
@@ -243,6 +267,7 @@ impl Engine {
             notifier,
             me: Mutex::new(None),
             forced: Mutex::new(Default::default()),
+            alerted: Mutex::new(None),
         }
     }
 
@@ -458,7 +483,7 @@ impl Engine {
                     continue;
                 }
             }
-            self.process(&org, &pat, &settings, pr).await;
+            self.process(&org, &pat, &settings, pr).await?;
         }
         Ok(())
     }
@@ -585,7 +610,9 @@ impl Engine {
         }
     }
 
-    async fn process(self: &Arc<Self>, org: &AdoClient, pat: &str, settings: &Settings, pr: PullRequest) {
+    /// Reviews one pull request. An `Err` means reviewing cannot work at all
+    /// right now (see `setup_problem`), so the caller should stop and say so.
+    async fn process(self: &Arc<Self>, org: &AdoClient, pat: &str, settings: &Settings, pr: PullRequest) -> Result<()> {
         let info = pr_info(&pr, org);
         let id = info.id;
         let started = Utc::now();
@@ -652,6 +679,30 @@ impl Engine {
         };
 
         match result {
+            Err(e) if setup_problem(&format!("{e:#}")) => {
+                // Nothing is wrong with this pull request: Claude Code itself cannot
+                // run. Do not use up one of the PR's attempts or add a failed review
+                // every minute; stop, say why, and try again once it is fixed.
+                let message = format!("{e:#}");
+                self.log("warn", format!("Reviewing is paused: {message}"));
+                {
+                    let mut shared = self.shared.lock().unwrap();
+                    if let Some(current) = shared.live.current.as_mut() {
+                        current.done = true;
+                        let step = current.step;
+                        current.failed.push(step);
+                    }
+                }
+                if !settings.dry_run {
+                    let _ = self.write_claim(org, &info, "released", None).await;
+                }
+                let first_time = self.alerted.lock().unwrap().replace(message.clone()).as_deref() != Some(message.as_str());
+                if first_time {
+                    self.notify("Warden cannot review right now", message.clone());
+                }
+                self.emit_live();
+                return Err(anyhow::anyhow!(message));
+            }
             Err(e) => {
                 let message = format!("{e:#}");
                 let attempts = {
@@ -668,6 +719,7 @@ impl Engine {
                 record.error = Some(message);
             }
             Ok(run) => {
+                *self.alerted.lock().unwrap() = None;
                 let review = run.saved.review.clone();
                 record.pr = pr_info(&run.pr, org);
                 if record.pr.project.is_empty() {
@@ -815,6 +867,7 @@ impl Engine {
         self.emit_history();
         self.emit_live();
         self.notify(notice.0, notice.1);
+        Ok(())
     }
 
     /// Approves (and sets auto-complete) or marks "waiting for author".
@@ -986,6 +1039,66 @@ mod tests {
         record.status = Outcome::Failed;
         record.error = Some("Claude timed out after 600s.\nmore".into());
         assert_eq!(finished_notice(&record), ("Review failed".into(), "PR 7: Add cache\nClaude timed out after 600s.".into()));
+    }
+
+    #[test]
+    fn setup_problems_are_told_apart_from_review_failures() {
+        for message in [
+            "The `claude` CLI is not signed in (Failed to authenticate: OAuth session expired and could not be refreshed). Run `claude auth login`...",
+            "Your Claude Code CLI is too old for Warden's safety settings. Update it (run `claude update`) and try again.",
+            "`claude` was not found on PATH. Install the Claude Code CLI and make sure `claude` is on your PATH.",
+        ] {
+            assert!(setup_problem(message), "{message}");
+        }
+        for message in [
+            "Claude timed out after 600s.",
+            "Could not parse Claude's review after a retry (missing field `verdict`).",
+            "`git fetch origin a b` failed in /x: fatal: could not read from remote",
+            "Azure DevOps API error (HTTP 404): pull request not found",
+        ] {
+            assert!(!setup_problem(message), "{message}");
+        }
+    }
+
+    #[test]
+    fn attempts_lost_to_a_signed_out_claude_are_given_back_on_start() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::new(tmp.path().to_path_buf());
+        let failed = |id: u64, error: &str| Record {
+            record_id: format!("{id}-1"),
+            pr: PrInfo { id, title: "t".into(), project: "p".into(), repo: "r".into(), repo_id: "rid".into(), author: "a".into(), source: "s".into(), target: "main".into(), url: String::new(), commit: Some("c".into()) },
+            status: Outcome::Failed,
+            dry_run: false,
+            review: None,
+            counts: Counts::default(),
+            comment: None,
+            posted: false,
+            vote: None,
+            auto_complete: false,
+            merged: false,
+            stats: None,
+            started_at: Utc::now(),
+            finished_at: Utc::now(),
+            duration_secs: 1,
+            error: Some(error.into()),
+            lines: vec![],
+            work_items: vec![],
+        };
+        store
+            .save_history(&[
+                failed(1, "The `claude` CLI is not signed in (OAuth session expired)."),
+                failed(2, "Claude timed out after 600s."),
+            ])
+            .unwrap();
+        let mut tracking = Tracking::default();
+        tracking.prs.insert(1, tracked("c", Outcome::Failed, MAX_ATTEMPTS));
+        tracking.prs.insert(2, tracked("c", Outcome::Failed, MAX_ATTEMPTS));
+        store.save_tracking(&tracking).unwrap();
+
+        let engine = Engine::new(Store::new(tmp.path().to_path_buf()), Box::new(|_| {}));
+        let attempts = |id: u64| engine.shared.lock().unwrap().tracking.prs[&id].attempts;
+        assert_eq!(attempts(1), 0, "a setup problem is not the pull request's fault");
+        assert_eq!(attempts(2), MAX_ATTEMPTS, "a real review failure still counts");
     }
 
     #[test]

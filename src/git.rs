@@ -58,8 +58,25 @@ pub fn ensure_tool(name: &str) -> Result<()> {
     bail!("`{name}` was not found on PATH. {hint}")
 }
 
+/// Windows flag that stops a console program from opening its own window.
+pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// A command that runs without a window of its own. Warden is a windowed
+/// app, so on Windows every git or claude it starts would otherwise flash
+/// up a console window and take focus.
+#[allow(unused_mut)]
+pub fn background(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut cmd = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 fn git(repo: &Path) -> Command {
-    let mut cmd = Command::new("git");
+    let mut cmd = background("git");
     cmd.arg("-C").arg(repo);
     cmd
 }
@@ -187,7 +204,7 @@ fn clone(url: &str, dir: &Path, auth: Option<&GitAuth>) -> Result<()> {
             .with_context(|| format!("Could not remove {}", partial.display()))?;
     }
 
-    let mut cmd = Command::new("git");
+    let mut cmd = background("git");
     cmd.args(["clone", "--no-checkout", "--quiet", "-c"])
         .arg(format!("{}={}", LONG_PATHS.0, LONG_PATHS.1))
         .arg(url)
@@ -337,7 +354,7 @@ pub fn snapshot(repo: &Path, rev: &str, dir: &Path) -> Result<()> {
     let mut cmd = git(repo);
     cmd.args(["archive", "--format=tar", "-o"]).arg(&archive).arg(rev);
     run(cmd, "archive")?;
-    let unpacked = Command::new("tar").arg("-xf").arg(&archive).arg("-C").arg(dir).output();
+    let unpacked = background("tar").arg("-xf").arg(&archive).arg("-C").arg(dir).output();
     let _ = std::fs::remove_file(&archive);
     let out = unpacked.map_err(|e| anyhow!("Could not run tar: {e}"))?;
     if !out.status.success() {
@@ -348,7 +365,7 @@ pub fn snapshot(repo: &Path, rev: &str, dir: &Path) -> Result<()> {
 
 /// The user's own git email, if they have one configured.
 pub fn configured_email() -> Option<String> {
-    let out = Command::new("git").args(["config", "--get", "user.email"]).output().ok()?;
+    let out = background("git").args(["config", "--get", "user.email"]).output().ok()?;
     let email = String::from_utf8_lossy(&out.stdout).trim().to_string();
     (out.status.success() && !email.is_empty()).then_some(email)
 }

@@ -221,7 +221,7 @@ fn claude_status() -> ClaudeStatus {
     status.found = true;
     status.path = path.display().to_string();
     let run = |args: &[&str]| {
-        Command::new(&path)
+        prr::git::background(&path)
             .args(args)
             .stdin(Stdio::null())
             .output()

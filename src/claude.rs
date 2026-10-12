@@ -140,7 +140,11 @@ pub async fn run_with(
 ) -> Result<String> {
     let stream = progress.is_some();
     let program = crate::git::find_tool("claude").unwrap_or_else(|| "claude".into());
-    let mut child = tokio::process::Command::new(program)
+    let mut command = tokio::process::Command::new(program);
+    // No console window of its own on Windows; see `git::background`.
+    #[cfg(windows)]
+    command.creation_flags(crate::git::CREATE_NO_WINDOW);
+    let mut child = command
         .args(build_args_for(stream, tools, extra_dirs))
         .current_dir(repo)
         .stdin(Stdio::piped())

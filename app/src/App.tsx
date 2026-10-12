@@ -127,6 +127,13 @@ export default function App() {
     bodyRef.current?.scrollTo(0, 0);
   }, [view, selected]);
 
+  // Claude Code can be signed out or updated while Warden runs, so its status
+  // is re-read whenever a check reports a problem or recovers from one.
+  const checkError = live?.error ?? null;
+  useEffect(() => {
+    api.claudeStatus().then(setClaude);
+  }, [checkError]);
+
   const theme = settings?.theme === "light" || settings?.theme === "dark" ? settings.theme : systemDark ? "dark" : "light";
   useEffect(() => {
     document.documentElement.dataset.theme = theme;

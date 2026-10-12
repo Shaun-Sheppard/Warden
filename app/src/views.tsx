@@ -48,7 +48,7 @@ export function Activity({ live, history, settings, now, onOpen, onHistory }: {
     <>
       {live.error && (
         <div className="banner tint-critical" role="alert">
-          <b className="tone-critical">Last check failed</b>
+          <b className="tone-critical">{/signed in|too old|not found on PATH/.test(live.error) ? "Reviewing is paused" : "Last check failed"}</b>
           <span className="grow selectable">{live.error}</span>
           <CheckButton checking={live.checking} label="Try again" />
         </div>
