@@ -104,6 +104,28 @@ pub fn review_status(pr_status: &str, votes: &[i32]) -> &'static str {
     }
 }
 
+/// The model a fix runs on, and whether it counts as complex: complex when
+/// triage (or the user) rated it so, when it came back after an earlier fix,
+/// or when triage left it for a person and it is being fixed anyway.
+pub fn fix_model(settings: &Settings, record: &TriageRecord) -> (String, bool) {
+    let complex = record.complexity.eq_ignore_ascii_case("complex")
+        || !record.history.is_empty()
+        || record.recommendation.as_deref() == Some("human");
+    let spec = if complex {
+        claude::model_spec(&settings.fix_model_complex, &settings.fix_effort_complex)
+    } else {
+        claude::model_spec(&settings.fix_model_simple, &settings.fix_effort_simple)
+    };
+    (spec, complex)
+}
+
+/// Whether a failed fix might work with a stronger model: not when Claude is
+/// unavailable or set up wrongly, and not when there are simply no tests.
+fn worth_escalating(error: &anyhow::Error) -> bool {
+    let message = format!("{error:#}");
+    !fix_setup_problem(&message) && !message.contains("found no tests")
+}
+
 /// `warden/4102-page-heading-keeps-the-old-name`
 pub fn branch_name(id: u64, title: &str) -> String {
     let mut slug = String::new();
@@ -827,8 +849,23 @@ impl Engine {
         self.pump_item_fixes();
     }
 
+    /// Moves items back whose fix was cut off by Warden closing: they were moved
+    /// to in progress when the fix started and would otherwise stay there.
+    pub(super) async fn put_back_interrupted(self: Arc<Self>) {
+        let ids: Vec<u64> = self
+            .triage()
+            .records
+            .iter()
+            .filter(|r| r.fix.as_ref().is_some_and(|f| f.status == ItemFixStatus::Failed && f.pr_id.is_none() && f.moved_from.is_some()))
+            .map(|r| r.id)
+            .collect();
+        for id in ids {
+            self.put_item_back(id).await;
+        }
+    }
+
     /// A fix that failed before opening a pull request leaves its item where it was.
-    async fn put_item_back(&self, id: u64) {
+    pub(super) async fn put_item_back(&self, id: u64) {
         let Some(record) = self.triage().records.into_iter().find(|r| r.id == id) else { return };
         let Some(fix) = record.fix.as_ref() else { return };
         let (Some(from), Some(to), None) = (fix.moved_from.clone(), fix.moved_to.clone(), fix.pr_id) else { return };
@@ -947,7 +984,23 @@ impl Engine {
         let copied = self.prepare_worktree(id, &work, Some(&mapping)).await?;
 
         let prompt = fix_prompt(&item, &record, &repo.name, &target, &copied, &history);
-        let report = self.fix_and_test(id, &work, &prompt, "Claude is fixing the item and running the tests").await?;
+        let (model, complex) = fix_model(&settings, &record);
+        let label = "Claude is fixing the item and running the tests";
+        let report = match self.fix_and_test(id, &work, &prompt, label, &model).await {
+            Ok(report) => report,
+            // A simple fix that did not work gets one more go on the complex model, with
+            // what the first attempt said; its changes are still in place to build on.
+            Err(e) if !complex && settings.fix_escalate && worth_escalating(&e)
+                && claude::model_spec(&settings.fix_model_complex, &settings.fix_effort_complex) != model =>
+            {
+                let reason = format!("{e:#}");
+                let stronger = claude::model_spec(&settings.fix_model_complex, &settings.fix_effort_complex);
+                self.item_fix_log(id, "warn", format!("The first attempt did not succeed; trying again with {}", if stronger.is_empty() { "the default model" } else { &stronger }));
+                let retry = format!("{prompt}\n## An earlier attempt\nA first attempt at this fix did not succeed:\n{}\nAny changes it made are still in place. Keep what is right and fix the rest.\n", clip(&reason, 4000));
+                self.fix_and_test(id, &work, &retry, "Claude is fixing the item again and running the tests", &stronger).await?
+            }
+            Err(e) => return Err(e),
+        };
         let (diff, truncated, files) = staged_change(&work).await?;
         self.update_item_fix(id, |f| {
             f.report = report.clone();
@@ -1079,7 +1132,9 @@ impl Engine {
         let copied = self.prepare_worktree(id, &work, mapping).await?;
 
         let prompt = feedback_prompt(&item, pr_id, &branch, &target, &threads, &copied);
-        let report = self.fix_and_test(id, &work, &prompt, "Claude is addressing the comments and running the tests").await?;
+        // The same model as the fix itself.
+        let model = if fix.model.is_empty() { fix_model(&settings, &record).0 } else { fix.model.clone() };
+        let report = self.fix_and_test(id, &work, &prompt, "Claude is addressing the comments and running the tests", &model).await?;
         let (diff, truncated, files) = staged_change(&work).await?;
         self.update_item_fix(id, |f| {
             f.diff = diff;
@@ -1199,15 +1254,16 @@ impl Engine {
 
     /// Claude edits the code in `work`, then builds and runs the tests itself. Succeeds only
     /// if it changed something and says the tests pass. Returns its report.
-    async fn fix_and_test(self: &Arc<Self>, id: u64, work: &Path, prompt: &str, label: &str) -> Result<String> {
+    async fn fix_and_test(self: &Arc<Self>, id: u64, work: &Path, prompt: &str, label: &str, model: &str) -> Result<String> {
         self.update_item_fix(id, |f| {
             f.status = ItemFixStatus::Fixing;
             f.rounds += 1;
             f.tests = None;
+            f.model = model.to_string();
         });
-        self.item_fix_log(id, "cmd", label);
+        self.item_fix_log(id, "cmd", if model.trim().is_empty() { label.to_string() } else { format!("{label} ({model})") });
         let started = Instant::now();
-        let reply = self.claude_round(id, work, prompt).await?;
+        let reply = self.claude_round(id, work, prompt, model).await?;
         let (report, outcome) = split_outcome(&reply);
 
         // Build output from Claude's test runs stays out of the commit.
@@ -1246,7 +1302,7 @@ impl Engine {
         }
     }
 
-    async fn claude_round(self: &Arc<Self>, id: u64, work: &Path, prompt: &str) -> Result<String> {
+    async fn claude_round(self: &Arc<Self>, id: u64, work: &Path, prompt: &str, model: &str) -> Result<String> {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let me = self.clone();
         let forward = tokio::spawn(async move {
@@ -1256,7 +1312,7 @@ impl Engine {
                 }
             }
         });
-        let result = claude::run_with(work, prompt, FIX_TIMEOUT, Some(&tx), FIX_AND_TEST_TOOLS, &[]).await;
+        let result = claude::run_model(work, prompt, FIX_TIMEOUT, Some(&tx), FIX_AND_TEST_TOOLS, &[], Some(model)).await;
         drop(tx);
         let _ = forward.await;
         result
@@ -1278,6 +1334,7 @@ fn new_fix(automatic: bool) -> ItemFix {
         automatic,
         feedback: false,
         notes: String::new(),
+        model: String::new(),
         feedback_rounds: Vec::new(),
         branch: String::new(),
         target: String::new(),
@@ -1631,6 +1688,33 @@ mod tests {
         engine.update_settings(paused).unwrap();
         engine.pump_item_fixes();
         assert_eq!(status(&engine, 0), ItemFixStatus::Fixing);
+    }
+
+    #[test]
+    fn fixes_get_the_simple_or_complex_model() {
+        let settings = Settings::default();
+        let mut record: TriageRecord = serde_json::from_value(serde_json::json!({
+            "id": 1, "project": "P", "kind": "Bug", "title": "t", "state": "New", "areaPath": "P",
+            "priority": null, "url": "", "status": "done", "risk": "low", "aiSuitable": true, "confidence": "high",
+            "recommendation": "ai", "summary": "", "reason": "", "approach": "", "files": [], "repo": null, "branch": null,
+            "manipulation": null, "tagged": false, "commented": false, "error": null, "attempts": 0, "triagedAt": null, "durationSecs": 0
+        }))
+        .unwrap();
+        record.complexity = "simple".into();
+        assert_eq!(fix_model(&settings, &record), ("sonnet".to_string(), false));
+        record.complexity = "complex".into();
+        assert_eq!(fix_model(&settings, &record), ("opus".to_string(), true));
+        // Fixing anyway, or an item that came back, is complex whatever triage said.
+        record.complexity = "simple".into();
+        record.recommendation = Some("human".into());
+        assert!(fix_model(&settings, &record).1);
+        record.recommendation = Some("ai".into());
+        record.history.push(new_fix(false));
+        assert!(fix_model(&settings, &record).1);
+
+        assert!(worth_escalating(&anyhow::anyhow!("Claude could not get the tests to pass, so nothing was pushed")));
+        assert!(!worth_escalating(&anyhow::anyhow!("Claude found no tests to run, so nothing was pushed")));
+        assert!(!worth_escalating(&anyhow::anyhow!("The `claude` CLI is not signed in")));
     }
 
     #[test]

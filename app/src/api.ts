@@ -23,6 +23,8 @@ export interface Api {
   addressPrFeedback(id: number): Promise<void>;
   retryFailedFixes(): Promise<number>;
   setRecommendation(id: number, ai: boolean): Promise<void>;
+  setComplexity(id: number, complex: boolean): Promise<void>;
+  testLocalModel(url: string, model: string): Promise<string>;
   forgetItem(id: number): Promise<void>;
   listProjects(): Promise<string[]>;
   itemComments(id: number): Promise<{ author: string; date: string; text: string }[]>;
@@ -90,6 +92,8 @@ const tauriApi: Api = {
   addressPrFeedback: (id) => invoke("address_pr_feedback", { id }),
   retryFailedFixes: () => invoke("retry_failed_fixes"),
   setRecommendation: (id, ai) => invoke("set_recommendation", { id, ai }),
+  setComplexity: (id, complex) => invoke("set_complexity", { id, complex }),
+  testLocalModel: (url, model) => invoke("test_local_model", { url, model }),
   forgetItem: (id) => invoke("forget_item", { id }),
   listProjects: () => invoke("list_projects"),
   itemComments: (id) => invoke("item_comments", { id }),

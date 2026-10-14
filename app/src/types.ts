@@ -42,6 +42,23 @@ export interface Settings {
   reviewPrompt: string;
   triagePrompt: string;
   projectConfigs: ProjectConfig[];
+  /** Claude models per kind of work; "" for Claude Code's default. */
+  reviewModel: string;
+  triageModel: string;
+  fixModelSimple: string;
+  fixModelComplex: string;
+  fixEscalate: boolean;
+  /** Effort per kind of work: low, medium, high, xhigh or max; "" for the default. */
+  reviewEffort?: string;
+  triageEffort?: string;
+  fixEffortSimple?: string;
+  fixEffortComplex?: string;
+  /** Screen items with a local model (Ollama) before Claude triage. */
+  localPretriage?: boolean;
+  localUrl?: string;
+  localModel?: string;
+  /** The local model does all of triage; Claude is not used for triage. */
+  localTriageOnly?: boolean;
   /** Only items in each project's current sprint. */
   triageCurrentSprint?: boolean;
   triageDryRun: boolean;
@@ -120,6 +137,12 @@ export interface TriageRecord {
   tag?: string;
   /** The user moved the item to another group than triage chose. */
   overridden?: boolean;
+  /** How hard the fix looks: "simple" or "complex". */
+  complexity?: string;
+  /** The local model that screened this item as needing a person, when Claude did not triage it. */
+  screenedBy?: string | null;
+  /** The local model that did all of this item's triage. */
+  triagedBy?: string | null;
   /** Earlier fixes, newest last, for an item that came back to the board. */
   history?: ItemFix[];
   /** The item this one sits under, such as the PBI a "Dev" task belongs to. */
@@ -145,6 +168,8 @@ export interface ItemFix {
   feedback: boolean;
   /** What the user told Claude when starting the fix. */
   notes?: string;
+  /** The model the fix ran on last. */
+  model?: string;
   feedbackRounds: { at: string; threads: number; report: string; commit: string | null }[];
   branch: string;
   target: string;
@@ -179,6 +204,8 @@ export interface TriageState {
   fixProblem?: string | null;
   records: TriageRecord[];
   current: number | null;
+  /** The model working on the current item. */
+  currentModel?: string | null;
   lines: LogLine[];
   lastCheck: string | null;
   error: string | null;

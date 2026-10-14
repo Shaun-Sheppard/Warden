@@ -58,6 +58,28 @@ pub struct Settings {
     pub triage_types: Vec<String>,
     /// Which repository and branch the work in each area path belongs to.
     pub area_mappings: Vec<AreaMapping>,
+    /// The Claude model for each kind of work: an alias (`opus`, `sonnet`,
+    /// `haiku`) or a full id; empty for Claude Code's own default.
+    pub review_model: String,
+    pub triage_model: String,
+    /// Fixes triage rates simple, and complex ones (and items that came back).
+    pub fix_model_simple: String,
+    pub fix_model_complex: String,
+    /// The effort for each kind of work (`low` … `max`); empty for the default.
+    pub review_effort: String,
+    pub triage_effort: String,
+    pub fix_effort_simple: String,
+    pub fix_effort_complex: String,
+    /// A simple fix that fails is tried once more with the complex model.
+    pub fix_escalate: bool,
+    /// Screen items with a model on this computer (Ollama) first: ones it is
+    /// sure need a person skip Claude's triage.
+    pub local_pretriage: bool,
+    pub local_url: String,
+    pub local_model: String,
+    /// The local model does all of triage, from the item's text alone, and
+    /// Claude is not used for triage at all.
+    pub local_triage_only: bool,
     /// Everything configured per project: review, triage and its areas.
     /// `projects`, `people`, `triage_projects` and `area_mappings` above are only
     /// read once, to move older settings into these (see `normalise`).
@@ -248,6 +270,19 @@ impl Default for Settings {
             triage_types: vec!["Bug".to_string()],
             area_mappings: Vec::new(),
             project_configs: Vec::new(),
+            review_model: "opus".to_string(),
+            triage_model: "sonnet".to_string(),
+            fix_model_simple: "sonnet".to_string(),
+            fix_model_complex: "opus".to_string(),
+            fix_escalate: true,
+            review_effort: String::new(),
+            triage_effort: String::new(),
+            fix_effort_simple: String::new(),
+            fix_effort_complex: String::new(),
+            local_pretriage: false,
+            local_url: "http://localhost:11434".to_string(),
+            local_model: String::new(),
+            local_triage_only: false,
         }
     }
 }
@@ -507,6 +542,19 @@ pub struct TriageRecord {
     /// The user moved the item to another group than triage chose.
     #[serde(default)]
     pub overridden: bool,
+    /// How hard the fix looks: `simple` or `complex`, from triage or the user.
+    #[serde(default)]
+    pub complexity: String,
+    /// The local model that screened this item as needing a person, when
+    /// Claude did not triage it.
+    #[serde(default)]
+    pub screened_by: Option<String>,
+    /// The local model that did all of this item's triage, when Claude did not.
+    #[serde(default)]
+    pub triaged_by: Option<String>,
+    /// The next triage goes straight to Claude ("Triage again").
+    #[serde(default)]
+    pub claude_only: bool,
     /// Earlier fixes, newest last, for an item that came back to the board
     /// after being fixed (failed testing, say).
     #[serde(default)]
@@ -566,6 +614,9 @@ pub struct ItemFix {
     /// What the user told Claude when starting the fix, to help with it.
     #[serde(default)]
     pub notes: String,
+    /// The model the fix ran on last (after any escalation).
+    #[serde(default)]
+    pub model: String,
     /// Each time Claude addressed comments on the pull request.
     #[serde(default)]
     pub feedback_rounds: Vec<FeedbackRound>,
@@ -659,6 +710,8 @@ pub struct TriageState {
     pub records: Vec<TriageRecord>,
     /// The item being triaged right now.
     pub current: Option<u64>,
+    /// The model working on it: the local one while screening, then Claude's.
+    pub current_model: Option<String>,
     pub lines: Vec<LogLine>,
     pub last_check: Option<DateTime<Utc>>,
     pub error: Option<String>,

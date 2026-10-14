@@ -5335,11 +5335,12 @@ dependencies = [
 
 [[package]]
 name = "warden"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "chrono",
  "prr",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tauri",

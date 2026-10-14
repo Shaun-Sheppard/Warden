@@ -76,6 +76,49 @@ pub fn build_args(stream: bool) -> Vec<String> {
 /// `stream` asks for one JSON event per line, so tool activity can be shown live.
 /// `extra_dirs` are readable in addition to the working directory.
 pub fn build_args_for(stream: bool, tools: Tools, extra_dirs: &[&Path]) -> Vec<String> {
+    build_args_model(stream, tools, extra_dirs, None)
+}
+
+/// The effort levels the CLI accepts.
+pub const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+/// A model name the CLI is given as is: an alias (`opus`, `sonnet`, `haiku`) or
+/// a full id. Anything else (empty, "default", or text that could pass for an
+/// option) means Claude Code's own default.
+pub fn model_arg(model: Option<&str>) -> Option<String> {
+    let model = model?.trim();
+    let usable = !model.is_empty()
+        && !model.eq_ignore_ascii_case("default")
+        && !model.starts_with('-')
+        && model.len() <= 80
+        && model.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_' | '[' | ']'));
+    usable.then(|| model.to_string())
+}
+
+/// A model and effort as one value, `model@effort`: either part may be empty
+/// for Claude Code's default (`opus`, `opus@high`, `@medium`).
+pub fn model_spec(model: &str, effort: &str) -> String {
+    let (model, effort) = (model.trim(), effort.trim());
+    if effort.is_empty() { model.to_string() } else { format!("{model}@{effort}") }
+}
+
+/// The CLI options for a `model@effort` value; unknown parts are left out.
+pub fn model_args(spec: Option<&str>) -> Vec<String> {
+    let Some(spec) = spec else { return Vec::new() };
+    let (model, effort) = spec.split_once('@').unwrap_or((spec, ""));
+    let mut args = Vec::new();
+    if let Some(model) = model_arg(Some(model)) {
+        args.extend(["--model".to_string(), model]);
+    }
+    let effort = effort.trim().to_lowercase();
+    if EFFORTS.contains(&effort.as_str()) {
+        args.extend(["--effort".to_string(), effort]);
+    }
+    args
+}
+
+/// `build_args_for`, running a particular model.
+pub fn build_args_model(stream: bool, tools: Tools, extra_dirs: &[&Path], model: Option<&str>) -> Vec<String> {
     let mut args = vec![
         "-p".to_string(),
         "--output-format".to_string(),
@@ -111,6 +154,7 @@ pub fn build_args_for(stream: bool, tools: Tools, extra_dirs: &[&Path]) -> Vec<S
     for dir in extra_dirs {
         args.extend(["--add-dir".to_string(), dir.display().to_string()]);
     }
+    args.extend(model_args(model));
     args
 }
 
@@ -165,8 +209,20 @@ pub async fn run(
     progress: Option<&ProgressTx>,
     input_dir: Option<&Path>,
 ) -> Result<String> {
+    run_review(repo, prompt, timeout, progress, input_dir, None).await
+}
+
+/// `run`, with a particular model (`None` for Claude Code's default).
+pub async fn run_review(
+    repo: &Path,
+    prompt: &str,
+    timeout: Duration,
+    progress: Option<&ProgressTx>,
+    input_dir: Option<&Path>,
+    model: Option<&str>,
+) -> Result<String> {
     let extra: Vec<&Path> = input_dir.into_iter().collect();
-    run_with(repo, prompt, timeout, progress, REVIEW_TOOLS, &extra).await
+    run_model(repo, prompt, timeout, progress, REVIEW_TOOLS, &extra, model).await
 }
 
 /// Runs Claude headless in `repo` with the given tools.
@@ -177,6 +233,19 @@ pub async fn run_with(
     progress: Option<&ProgressTx>,
     tools: Tools,
     extra_dirs: &[&Path],
+) -> Result<String> {
+    run_model(repo, prompt, timeout, progress, tools, extra_dirs, None).await
+}
+
+/// `run_with`, with a particular model (`None` for Claude Code's default).
+pub async fn run_model(
+    repo: &Path,
+    prompt: &str,
+    timeout: Duration,
+    progress: Option<&ProgressTx>,
+    tools: Tools,
+    extra_dirs: &[&Path],
+    model: Option<&str>,
 ) -> Result<String> {
     let stream = progress.is_some();
     let program = crate::git::find_tool("claude").unwrap_or_else(|| "claude".into());
@@ -190,7 +259,7 @@ pub async fn run_with(
         command.env("CI", "true").env("BROWSER", "none");
     }
     let mut child = command
-        .args(build_args_for(stream, tools, extra_dirs))
+        .args(build_args_model(stream, tools, extra_dirs, model))
         .current_dir(repo)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -315,6 +384,21 @@ mod tests {
         assert!(at("--allowedTools").contains("Bash(npx ng test *)"));
         assert!(!at("--allowedTools").contains("curl"));
         assert!(with_tests.contains(&"--restricted".to_string()));
+
+        assert_eq!(model_arg(Some(" opus ")).as_deref(), Some("opus"));
+        assert_eq!(model_arg(Some("claude-sonnet-5-5")).as_deref(), Some("claude-sonnet-5-5"));
+        for none in [None, Some(""), Some("default"), Some("Default"), Some("--dangerously-skip-permissions"), Some("opus; rm -rf ~"), Some("a b")] {
+            assert_eq!(model_arg(none), None, "{none:?}");
+        }
+        let with_model = build_args_model(false, REVIEW_TOOLS, &[], Some("haiku"));
+        assert_eq!(&with_model[with_model.len() - 2..], ["--model", "haiku"]);
+        assert_eq!(model_args(Some("opus@high")), ["--model", "opus", "--effort", "high"]);
+        assert_eq!(model_args(Some("@medium")), ["--effort", "medium"]);
+        assert_eq!(model_args(Some("sonnet@turbo")), ["--model", "sonnet"]);
+        assert_eq!(model_args(Some("@--yolo")), Vec::<String>::new());
+        assert_eq!(model_spec("opus", ""), "opus");
+        assert_eq!(model_spec("", "high"), "@high");
+        assert!(!build_args_model(false, REVIEW_TOOLS, &[], Some("default")).contains(&"--model".to_string()));
 
         let args = build_args_for(false, FIX_TOOLS, &[]);
         for flag in ["--restricted", "--safe-mode", "--strict-mcp-config"] {

@@ -198,6 +198,10 @@ section[id^="sec-"] { scroll-margin-top: 16px; }
 .fixes { padding: 24px; display: flex; flex-direction: column; gap: 16px; max-width: 1000px; }
 .fix-bar { padding: 14px 18px; display: flex; align-items: center; gap: 16px; }
 /* Settings sections and projects */
+.model-row { align-items: center; }
+.model-row > .stack { flex: 1; min-width: 0; }
+.model-pickers { display: flex; gap: 8px; flex: none; }
+.settings .model-select { width: 136px; flex: none; }
 .settings-tabs { align-self: flex-start; position: sticky; top: 0; z-index: 2; }
 .project-card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--card-sh); overflow: hidden; }
 .project-card.open { border-color: color-mix(in oklab, var(--text) 16%, transparent); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06); }

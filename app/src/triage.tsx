@@ -38,7 +38,7 @@ function columnOf(r: TriageRecord): Column {
   const fix = r.fix;
   if (fix && RUNNING.includes(fix.status)) return "fixing";
   // Someone (you) moved it to in progress on the board.
-  if (r.status === "left" && r.elsewhere && !fix?.prId) return "fixing";
+  if (r.status === "left" && r.elsewhere && !fix) return "fixing";
   if (fix?.prId && fix.status !== "queued") {
     if (fix.review === "approved" || fix.review === "completed") return "fixed";
     if (fix.review === "rejected" || fix.review === "waiting" || fix.review === "abandoned" || fix.status === "failed") return "failedReview";
@@ -105,7 +105,7 @@ function ItemPills({ r }: { r: TriageRecord }) {
   return (
     <>
       {r.status === "triaging" && <Pill tone="blue" spin>Triaging</Pill>}
-      {r.status === "left" && r.elsewhere && !fix?.prId && <Pill tone="sand" title="Moved to in progress on the board, outside Warden">By hand · {r.elsewhere}</Pill>}
+      {r.status === "left" && r.elsewhere && !fix && <Pill tone="sand" title="Moved to in progress on the board, outside Warden">By hand · {r.elsewhere}</Pill>}
       {r.status === "pending" && <Pill>Waiting</Pill>}
       {r.status === "failed" && <Pill tone="critical">Triage failed</Pill>}
       {fix && RUNNING.includes(fix.status) && <Pill tone="blue" spin>{fixLabel(fix)}</Pill>}
@@ -118,8 +118,11 @@ function ItemPills({ r }: { r: TriageRecord }) {
         </Pill>
       )}
       {reason && <Pill tone="sand">{reason}</Pill>}
+      {r.screenedBy && <Pill title={`Screened by ${r.screenedBy} on this computer; Claude did not triage it`}>Screened locally</Pill>}
+      {r.triagedBy && !r.screenedBy && <Pill title={`Triaged by ${r.triagedBy} on this computer, from the item's text`}>Triaged locally</Pill>}
       {r.overridden && <Pill title="You moved this item; Triage again lets Claude decide">Moved by you</Pill>}
       {!!r.history?.length && !r.fix && <Pill tone="major" title="Fixed before, and back on your board">Came back</Pill>}
+      {r.complexity === "complex" && r.recommendation === "ai" && <Pill tone="blue" title="Fixed with the complex-fix model">Complex fix</Pill>}
       {r.risk && <Pill tone={RISK_TONE[r.risk]}>{r.risk} risk</Pill>}
     </>
   );
@@ -240,7 +243,7 @@ function FixSection({ fix }: { fix: ItemFix }) {
   return (
     <section className="modal-section">
       <div className="modal-section-head">
-        <span className="eyebrow">Fix · {fix.feedback ? "PR comments" : fix.automatic ? "automatic" : "by hand"}</span>
+        <span className="eyebrow">Fix · {fix.feedback ? "PR comments" : fix.automatic ? "automatic" : "by hand"}{fix.model ? ` · ${fix.model.replace("@", " · ").replace(/^ · /, "")}` : ""}</span>
         {fix.branch && <span className="mono branch selectable">{fix.branch} → {fix.target}</span>}
       </div>
 
@@ -390,7 +393,8 @@ function ItemModal({ r, onClose }: { r: TriageRecord; onClose: () => void }) {
   const fix = r.fix;
   const fixBusy = !!fix && BUSY.includes(fix.status);
   // Any triaged item with a repository can be fixed by hand; one already with a pull request cannot.
-  const canFix = r.status === "done" && !!r.repo && !fixBusy && !fix?.prId;
+  // A failed fix can be tried again wherever the item is on the board.
+  const canFix = (r.status === "done" || (r.status === "left" && fix?.status === "failed")) && !!r.repo && !fixBusy && !fix?.prId;
   const canAddress = !!fix?.prId && !fixBusy;
   const act = (run: () => Promise<unknown>) => { setBusy(true); setError(null); run().catch((e) => setError(String(e))).finally(() => setBusy(false)); };
   const column = columnOf(r);
@@ -424,7 +428,7 @@ function ItemModal({ r, onClose }: { r: TriageRecord; onClose: () => void }) {
         <div className="modal-body">
           <section className="modal-section">
             <span className="eyebrow">Triage</span>
-            {r.status === "left" && r.elsewhere && !fix?.prId && (
+            {r.status === "left" && r.elsewhere && !fix && (
               <div className="callout callout-neutral">Being fixed by hand: it is {r.elsewhere} on the board, moved there outside Warden. Warden leaves it alone, and shows it here until it moves on.</div>
             )}
             {!triaged && !r.error && <p className="modal-text tone-muted">{r.status === "triaging" ? "Claude is reading this item now." : "Triage notes will appear here once Claude has looked at this item."}</p>}
@@ -436,11 +440,17 @@ function ItemModal({ r, onClose }: { r: TriageRecord; onClose: () => void }) {
             {r.files.length > 0 && (
               <div className="chips">{r.files.map((f) => <span className="chip mono" key={f} title={f}>{f.split("/").pop()}</span>)}</div>
             )}
+            {r.triagedBy && !r.screenedBy && (
+              <div className="callout callout-neutral">Triaged by {r.triagedBy} on this computer, from the item's text alone (it cannot read the code). Turn off “Use the local model for all triage” and choose “Triage again” to have Claude look at it.</div>
+            )}
+            {r.screenedBy && (
+              <div className="callout callout-neutral">Screened by {r.screenedBy} on this computer, which judged it needs a person, so Claude did not triage it. Choose “Triage again” to have Claude look at it.</div>
+            )}
             {r.manipulation && <div className="callout callout-critical"><span className="callout-mark">!</span><span className="selectable">Text aimed at automated tools was found and ignored: “{r.manipulation}”</span></div>}
             {r.error && <div className="callout callout-critical"><span className="callout-mark">!</span><span className="selectable" style={{ whiteSpace: "pre-wrap" }}>{r.error}</span></div>}
             {r.aiSuitable !== null && (
               <span className="help">
-                AI suitable: {r.aiSuitable ? "yes" : "no"} · confidence {r.confidence}
+                AI suitable: {r.aiSuitable ? "yes" : "no"} · confidence {r.confidence}{r.complexity ? ` · ${r.complexity} fix` : ""}
                 {r.tagged ? " · tagged" : ""}{r.commented ? " · you were mentioned in a comment" : ""}
                 {r.triagedAt ? ` · triaged ${ago(r.triagedAt, Date.now())}` : ""}
               </span>
@@ -505,6 +515,12 @@ function ItemModal({ r, onClose }: { r: TriageRecord; onClose: () => void }) {
           {triaged && !fixBusy && !fix?.prId && r.recommendation === "ai" && (
             <button className="btn ghost" disabled={busy} title="Leave it for a person; automatic fixes skip it"
               onClick={() => act(() => api.setRecommendation(r.id, false))}>{r.overridden ? "Move back to For a person" : "Move to For a person"}</button>
+          )}
+          {triaged && !fixBusy && !fix?.prId && r.repo && (
+            <button className="btn ghost" disabled={busy} title="Which fix model this item gets"
+              onClick={() => act(() => api.setComplexity(r.id, r.complexity !== "complex"))}>
+              {r.complexity === "complex" ? "Treat as a simple fix" : "Treat as a complex fix"}
+            </button>
           )}
           {fix?.prUrl && <button className="btn" onClick={() => api.open(fix.prUrl!)}>Open pull request ↗</button>}
           <button className="btn" onClick={() => api.open(r.url)}>Open in Azure DevOps ↗</button>
@@ -579,7 +595,8 @@ export function Triage({ triage, now, autoFix, paused, onSettings, project, onPr
   // Items leave the board once their pull request moves them on; keep those in view.
   // Items leave the to-do states as soon as a fix moves them on, so being fixed or
   // having a pull request keeps them in view.
-  const allRecords = triage.records.filter((r) => r.status !== "left" || !!r.fix?.prId || !!r.elsewhere || (!!r.fix && BUSY.includes(r.fix.status)));
+  const allRecords = triage.records.filter((r) => r.status !== "left" || !!r.fix?.prId || !!r.elsewhere
+    || (!!r.fix && (BUSY.includes(r.fix.status) || r.fix.status === "failed")));
   const projects = [...new Set(allRecords.map((r) => r.project))].sort();
   // A remembered project that no longer has items shows everything.
   const inProject = project && projects.includes(project) ? project : "";
@@ -652,7 +669,11 @@ export function Triage({ triage, now, autoFix, paused, onSettings, project, onPr
             </span>
           </span>
         </div>
-        {current && <span className="help"><span className="spinner" aria-hidden /> Triaging #{current.id}: {triage.lines[triage.lines.length - 1]?.text ?? current.title}</span>}
+        {current && (
+          <span className="help">
+            <span className="spinner" aria-hidden /> Triaging #{current.id}{triage.currentModel ? <> with <b className="tone-muted">{triage.currentModel}</b></> : null}: {triage.lines[triage.lines.length - 1]?.text ?? current.title}
+          </span>
+        )}
         {(() => {
           const toTriage = triage.records.filter((r) => r.status === "pending" || r.status === "triaging").length;
           const ready = triage.records.filter((r) => r.status === "done" && r.recommendation === "ai" && (!r.fix || (r.fix.automatic && r.fix.status === "queued"))).length;

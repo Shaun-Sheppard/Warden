@@ -605,6 +605,76 @@ function ProjectsSettings({ settings, change }: { settings: Settings; change: Ch
   );
 }
 
+/** The models offered for each kind of work; "" is whatever Claude Code itself uses. */
+const MODELS = [
+  { value: "", label: "Default" }, { value: "fable", label: "Fable" }, { value: "opus", label: "Opus" },
+  { value: "sonnet", label: "Sonnet" }, { value: "haiku", label: "Haiku" },
+];
+
+const EFFORTS = [
+  { value: "", label: "Default effort" }, { value: "low", label: "Low" }, { value: "medium", label: "Medium" },
+  { value: "high", label: "High" }, { value: "xhigh", label: "Extra high" }, { value: "max", label: "Max" },
+];
+
+function ModelSetting({ title, help, value, onChange, effort, onEffort }: {
+  title: string; help: string; value: string; onChange: (value: string) => void; effort: string; onEffort: (effort: string) => void;
+}) {
+  const known = MODELS.some((m) => m.value === value);
+  return (
+    <div className="switch-row model-row">
+      <span className="stack" style={{ gap: 2 }}><span className="label">{title}</span><span className="help">{help}</span></span>
+      <span className="model-pickers">
+        <select className="input model-select" value={value} onChange={(e) => onChange(e.target.value)} aria-label={`${title}: model`}>
+          {!known && <option value={value}>{value}</option>}
+          {MODELS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+        </select>
+        <select className="input model-select" value={effort} onChange={(e) => onEffort(e.target.value)} aria-label={`${title}: effort`}>
+          {EFFORTS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+        </select>
+      </span>
+    </div>
+  );
+}
+
+/** A model on this computer that screens items before Claude: those it is sure need a person skip Claude's triage. */
+function LocalPretriage({ settings, change }: { settings: Settings; change: Change }) {
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const [testing, setTesting] = useState(false);
+  const on = !!settings.localPretriage;
+  const test = () => {
+    setTesting(true);
+    setResult(null);
+    api.testLocalModel(settings.localUrl ?? "", settings.localModel ?? "")
+      .then((text) => setResult({ ok: true, text }), (e) => setResult({ ok: false, text: String(e) }))
+      .finally(() => setTesting(false));
+  };
+  return (
+    <div className="fields">
+      <SwitchRow title="Screen items with a local model first" on={on} onChange={(localPretriage) => change({ localPretriage })}
+        help="A model running on this computer (through Ollama) reads each item's text, without its code, and picks out the ones that clearly need a person. Those skip Claude's triage and are marked “Screened locally”; everything else, and anything it is unsure about, goes to Claude as usual." />
+      {on && (
+        <>
+          <div className="map-grid">
+            <label className="field"><span>Ollama address</span>
+              <input className="input mono" value={settings.localUrl ?? ""} placeholder="http://localhost:11434" onChange={(e) => change({ localUrl: e.target.value.trim() })} />
+            </label>
+            <label className="field"><span>Model</span>
+              <input className="input mono" value={settings.localModel ?? ""} placeholder="gpt-oss:20b" onChange={(e) => change({ localModel: e.target.value.trim() })} />
+            </label>
+          </div>
+          <SwitchRow title="Use the local model for all triage" on={!!settings.localTriageOnly} onChange={(localTriageOnly) => change({ localTriageOnly })}
+            help="Claude is not used for triage at all: the local model rates every item, from its text alone (it cannot read the code). Faster and free, but less informed. Fixes still use Claude." />
+          <div className="inline">
+            <button className="btn" disabled={testing || !(settings.localModel ?? "").trim()} onClick={test}>{testing ? "Asking the model…" : "Test the model"}</button>
+            {result && <span className={`help ${result.ok ? "tone-ok" : "tone-critical"}`}>{result.text}</span>}
+          </div>
+          <span className="help">The item's text, its parent and its comments are sent to this address; keep it on this computer. Use “Triage again” on an item to have Claude look at it instead.</span>
+        </>
+      )}
+    </div>
+  );
+}
+
 type SettingsTab = "general" | "review" | "triage" | "projects";
 const SETTINGS_TABS: { key: SettingsTab; label: string }[] = [
   { key: "general", label: "General" }, { key: "review", label: "PR review" }, { key: "triage", label: "Triage" }, { key: "projects", label: "Projects" },
@@ -676,6 +746,9 @@ export function SettingsView({ settings, change, onRunSetup, offer, onCheck }: {
             <div className="fields">
               <SwitchRow title="Dry run" on={settings.dryRun} onChange={(dryRun) => change({ dryRun })}
                 help="Review pull requests but never post, vote or complete. Use it to see what Warden would do." />
+              <ModelSetting title="Model" value={settings.reviewModel ?? ""} onChange={(reviewModel) => change({ reviewModel })}
+                effort={settings.reviewEffort ?? ""} onEffort={(reviewEffort) => change({ reviewEffort })}
+                help="Reviews run once per push and catch security problems, so they are worth the strongest model." />
               <SwitchRow title="Tag the author in the comment" on={settings.mentionAuthor} onChange={(mentionAuthor) => change({ mentionAuthor })} />
               <SwitchRow title="Also review pull requests that were already open" on={settings.reviewExisting} onChange={(reviewExisting) => change({ reviewExisting })}
                 help="Off: only pull requests opened after monitoring started are reviewed." />
@@ -700,10 +773,26 @@ export function SettingsView({ settings, change, onRunSetup, offer, onCheck }: {
                   options={[1, 2, 3, 4, 5].map((n) => ({ value: n, label: String(n) }))} />
               </div>
               <span className="help" style={{ marginTop: -8 }}>Across all projects. Each fix builds and tests its own copy of the repository, so more at once uses more of this computer, and test suites that share a database or port can get in each other's way.</span>
+              <ModelSetting title="Triage model" value={settings.triageModel ?? ""} onChange={(triageModel) => change({ triageModel })}
+                effort={settings.triageEffort ?? ""} onEffort={(triageEffort) => change({ triageEffort })}
+                help="Rates every item on your boards, so a lighter model saves the most here." />
+              <ModelSetting title="Model for simple fixes" value={settings.fixModelSimple ?? ""} onChange={(fixModelSimple) => change({ fixModelSimple })}
+                effort={settings.fixEffortSimple ?? ""} onEffort={(fixEffortSimple) => change({ fixEffortSimple })}
+                help="Fixes triage rates simple: a small, local change in one or two files." />
+              <ModelSetting title="Model for complex fixes" value={settings.fixModelComplex ?? ""} onChange={(fixModelComplex) => change({ fixModelComplex })}
+                effort={settings.fixEffortComplex ?? ""} onEffort={(fixEffortComplex) => change({ fixEffortComplex })}
+                help="Fixes triage rates complex, items that came back after an earlier fix, and items fixed anyway." />
+              <SwitchRow title="Try a failed simple fix again with the complex model" on={settings.fixEscalate ?? true} onChange={(fixEscalate) => change({ fixEscalate })}
+                help="If a simple fix cannot get the tests to pass, it gets one more go on the complex model, building on what the first attempt did." />
+              <span className="help">Higher effort means Claude thinks for longer before answering: better on hard problems, but slower. Stronger models and higher effort use a Claude subscription's limits faster; if a limit is reached, Warden pauses rather than failing items.</span>
               <SwitchRow title="Triage dry run" on={settings.triageDryRun} onChange={(triageDryRun) => change({ triageDryRun })}
                 help="Nothing goes to Azure DevOps: items are not tagged or commented on, and fixes are tested but never committed, pushed or opened as pull requests. Separate from the pull request dry run." />
-              <span className="help">Needs your token to have Work Items (Read &amp; Write). Pause triage and fixing from the top of the Triage page.</span>
+              <span className="help">Needs your token to have Work Items (Read &amp; Write). Pause everything from the button in the sidebar's monitoring box.</span>
             </div>
+          </section>
+          <section className="setting-group">
+            <div><h2>Local pre-triage</h2><span className="help">Optional. Let a model on this computer sort out the obvious “needs a person” items before Claude looks at the rest.</span></div>
+            <LocalPretriage settings={settings} change={change} />
           </section>
           <section className="setting-group">
             <div><h2>Triage prompt</h2><span className="help">How Claude rates each work item.</span></div>

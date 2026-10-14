@@ -237,7 +237,8 @@ impl Engine {
                 }
             }
         });
-        let result = claude::run_with(&work, &fix_prompt(&fix.pr, &fix.issues), FIX_TIMEOUT, Some(&tx), FIX_TOOLS, &[]).await;
+        let model = claude::model_spec(&settings.fix_model_simple, &settings.fix_effort_simple);
+        let result = claude::run_model(&work, &fix_prompt(&fix.pr, &fix.issues), FIX_TIMEOUT, Some(&tx), FIX_TOOLS, &[], Some(&model)).await;
         drop(tx);
         let _ = forward.await;
         let report = result?;

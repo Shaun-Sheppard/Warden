@@ -200,13 +200,14 @@ pub async fn run_review(
     let timeout = Duration::from_secs(config.review.timeout_seconds);
     let activity = stream_activity.then_some(tx);
     stage("Claude is reviewing".to_string());
-    let raw = claude::run(&work_dir, &prompt, timeout, activity, Some(&input_dir)).await?;
+    let model = config.review.model.as_deref();
+    let raw = claude::run_review(&work_dir, &prompt, timeout, activity, Some(&input_dir), model).await?;
     let parsed = match review::parse_review(&raw) {
         Ok(parsed) => parsed,
         Err(first) => {
             stage(format!("Output was not valid review JSON ({first}); asking Claude again"));
             let retry_prompt = review::build_retry_prompt(&raw, &first.to_string());
-            let retry_raw = claude::run(&work_dir, &retry_prompt, timeout, activity, Some(&input_dir)).await?;
+            let retry_raw = claude::run_review(&work_dir, &retry_prompt, timeout, activity, Some(&input_dir), model).await?;
             match review::parse_review(&retry_raw) {
                 Ok(parsed) => parsed,
                 Err(second) => {

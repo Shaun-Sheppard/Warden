@@ -83,6 +83,7 @@ let settings: Settings = {
   reviewExisting: false, setupComplete: !location.search.includes("setup"), theme: "system", mentionAuthor: true, reviewPrompt: "", triagePrompt: "", triageCurrentSprint: true, triageDryRun: true, triageAutoFix: false, triagePaused: false, triageMaxFixes: 1, triagePostResults: false, notifications: true,
   triageEnabled: !location.search.includes("notriage"), triageProjects: [], triageStates: ["To Do", "New"], triageTypes: ["Bug"],
   areaMappings: [],
+  reviewModel: "opus", triageModel: "sonnet", fixModelSimple: "sonnet", fixModelComplex: "opus", fixEscalate: true, localPretriage: false, localUrl: "http://localhost:11434", localModel: "",
   projectConfigs: [
     {
       name: "Payments", review: true, people: ["Priya Nair", "Tom Okafor"], approveAndComplete: true, mergeStrategy: "noFastForward", deleteSourceBranch: true,
@@ -226,7 +227,7 @@ const emptyFix: ItemFix = {
 };
 
 let triage: TriageState = {
-  current: 5207, lastCheck: minutesAgo(0.3), error: null,
+  current: 5207, currentModel: "sonnet · medium", lastCheck: minutesAgo(0.3), error: null,
   lines: [
     { time: now(), kind: "info", text: "Bug 5207: Refund email shows the wrong currency symbol" },
     { time: now(), kind: "cmd", text: "Getting the latest payments-api (main)" },
@@ -236,7 +237,7 @@ let triage: TriageState = {
   records: [
     triageItem(5207, "Refund email shows the wrong currency symbol", "Payments", "Payments\\Refunds", { status: "triaging", tagged: false, triagedAt: null }),
     triageItem(5199, "Typo in refund confirmation message", "Payments", "Payments\\Refunds", {
-      risk: "low", aiSuitable: true, confidence: "high", recommendation: "ai", repo: "payments-api", branch: "main",
+      risk: "low", aiSuitable: true, confidence: "high", recommendation: "ai", repo: "payments-api", branch: "main", complexity: "simple",
       summary: "The confirmation message says 'recieved' instead of 'received'.",
       reason: "A one-word change to a resource string with an existing snapshot test.",
       approach: "Correct the string in RefundMessages.resx and update the snapshot.", files: ["src/Refunds/RefundMessages.resx"],
@@ -331,6 +332,12 @@ export const mockApi: Api = {
   ] : [], 400),
   forgetItem: (id) => {
     triage = { ...triage, records: triage.records.filter((r) => r.id !== id) };
+    triageHandlers.forEach((h) => h(triage));
+    return later(undefined);
+  },
+  testLocalModel: (_url, model) => later(`${model || "model"} answered in 1.2s`, 800),
+  setComplexity: (id, complex) => {
+    triage = { ...triage, records: triage.records.map((r) => (r.id === id ? { ...r, complexity: complex ? "complex" : "simple" } : r)) };
     triageHandlers.forEach((h) => h(triage));
     return later(undefined);
   },

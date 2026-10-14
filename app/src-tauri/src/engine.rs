@@ -20,6 +20,7 @@ use crate::store::Store;
 
 mod fixes;
 mod item_fixes;
+pub mod local;
 pub mod triage;
 
 /// A PR whose review keeps failing is left alone after this many attempts.
@@ -209,6 +210,7 @@ fn pipeline_config(settings: &Settings, project: &str) -> Config {
         review: ReviewConfig {
             mention_author: settings.mention_author,
             prompt: Some(settings.review_prompt.clone()).filter(|p| !p.trim().is_empty()),
+            model: Some(prr::claude::model_spec(&settings.review_model, &settings.review_effort)).filter(|m| !m.trim().is_empty()),
             ..Default::default()
         },
         auto: Default::default(),
@@ -438,6 +440,8 @@ impl Engine {
         // Fix pull requests are followed on their own, so a long review in the main
         // check never holds up seeing one approved or sent back.
         tokio::spawn(self.clone().follow_fix_reviews());
+        // Fixes cut off when Warden last closed left their items in progress on the board.
+        tokio::spawn(self.clone().put_back_interrupted());
         loop {
             let result = self.cycle().await;
             let wait = Duration::from_secs(self.settings().poll_seconds.max(15));
@@ -577,6 +581,7 @@ impl Engine {
                 self.update_triage(|t| {
                     t.error = Some(message);
                     t.current = None;
+                    t.current_model = None;
                 });
             }
         }

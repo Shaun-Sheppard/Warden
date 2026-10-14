@@ -173,6 +173,25 @@ async fn set_recommendation(engine: Shared<'_>, id: u64, ai: bool) -> Result<(),
     engine.set_recommendation(id, ai).map_err(err)
 }
 
+/// Checks the local model answers, and how quickly.
+#[tauri::command]
+async fn test_local_model(url: String, model: String) -> Result<String, String> {
+    let started = std::time::Instant::now();
+    let reply = engine::local::ask(&url, &model, "Reply with only this JSON: {\"ok\": true}", std::time::Duration::from_secs(120))
+        .await
+        .map_err(err)?;
+    if !reply.contains("ok") {
+        return Err(format!("The model answered, but not as asked: {}", reply.chars().take(120).collect::<String>()));
+    }
+    Ok(format!("{model} answered in {:.1}s", started.elapsed().as_secs_f64()))
+}
+
+/// Sets whether an item's fix is simple or complex, which picks its model.
+#[tauri::command(async)]
+fn set_complexity(engine: Shared, id: u64, complex: bool) -> Result<(), String> {
+    engine.set_complexity(id, complex).map_err(err)
+}
+
 /// Forgets a triage item; the next check adds it back if it still qualifies.
 #[tauri::command(async)]
 fn forget_item(engine: Shared, id: u64) -> Result<(), String> {
@@ -524,6 +543,8 @@ fn main() {
             retry_failed_fixes,
             set_recommendation,
             forget_item,
+            set_complexity,
+            test_local_model,
             list_projects,
             item_comments,
             project_structure,

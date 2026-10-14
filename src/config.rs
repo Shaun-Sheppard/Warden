@@ -51,6 +51,9 @@ pub struct ReviewConfig {
     pub comment_prefix: String,
     /// Tag the PR's author in every posted comment.
     pub mention_author: bool,
+    /// The Claude model reviews run on; Claude Code's default when unset.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 impl Default for ReviewConfig {
@@ -61,6 +64,7 @@ impl Default for ReviewConfig {
             timeout_seconds: DEFAULT_TIMEOUT_SECONDS,
             comment_prefix: DEFAULT_COMMENT_PREFIX.to_string(),
             mention_author: true,
+            model: None,
         }
     }
 }
