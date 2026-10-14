@@ -33,7 +33,7 @@ export function parseDiff(diff: string): DiffFile[] {
   return files;
 }
 
-function DiffView({ fix }: { fix: Fix }) {
+export function DiffView({ fix }: { fix: Pick<Fix, "diff" | "files" | "diffTruncated"> }) {
   const files = parseDiff(fix.diff);
   return (
     <div className="stack" style={{ gap: 10, alignItems: "stretch" }}>

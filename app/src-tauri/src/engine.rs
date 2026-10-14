@@ -19,6 +19,8 @@ use crate::model::*;
 use crate::store::Store;
 
 mod fixes;
+mod item_fixes;
+pub mod triage;
 
 /// A PR whose review keeps failing is left alone after this many attempts.
 pub const MAX_ATTEMPTS: u32 = 3;
@@ -45,6 +47,7 @@ pub enum Change {
     Live(Live),
     History(Vec<Record>),
     Fixes(Vec<Fix>),
+    Triage(TriageState),
     /// Something worth a system notification.
     Notify { title: String, body: String },
 }
@@ -82,6 +85,7 @@ struct Shared {
     live: Live,
     history: Vec<Record>,
     fixes: Vec<Fix>,
+    triage: TriageState,
     tracking: Tracking,
 }
 
@@ -261,6 +265,7 @@ impl Engine {
             live: Live::default(),
             history,
             fixes: fixes::load(&store),
+            triage: triage::load(&store),
             tracking,
         };
         Self {
@@ -316,7 +321,9 @@ impl Engine {
         (self.notifier)(Change::History(self.history()));
     }
 
-    pub fn update_settings(&self, settings: Settings) -> Result<Settings> {
+    pub fn update_settings(&self, mut settings: Settings) -> Result<Settings> {
+        settings.normalise();
+        let mut unpaused = false;
         {
             let mut shared = self.shared.lock().unwrap();
             // A different organization is a different set of PRs.
@@ -326,6 +333,16 @@ impl Engine {
                 *self.me.lock().unwrap() = None;
             }
             shared.settings = settings.clone();
+            // New settings may have sorted out what paused fixing; the next fix finds out.
+            if shared.triage.fix_problem.take().is_some() {
+                let mut saved = shared.triage.clone();
+                saved.lines.clear();
+                let _ = self.store.save_triage(&saved);
+                unpaused = true;
+            }
+        }
+        if unpaused {
+            (self.notifier)(Change::Triage(self.triage()));
         }
         self.store.save_settings(&settings)?;
         self.emit_live();
@@ -338,6 +355,7 @@ impl Engine {
         let shared = self.shared.lock().unwrap();
         shared.live.current.as_ref().is_some_and(|c| !c.done)
             || shared.fixes.iter().any(|f| matches!(f.status, FixStatus::Generating | FixStatus::Pushing))
+            || shared.triage.records.iter().any(|r| r.fix.as_ref().is_some_and(ItemFix::in_flight))
     }
 
     fn updating(&self) -> bool {
@@ -417,15 +435,22 @@ impl Engine {
     }
 
     pub async fn run(self: Arc<Self>) {
+        // Fix pull requests are followed on their own, so a long review in the main
+        // check never holds up seeing one approved or sent back.
+        tokio::spawn(self.clone().follow_fix_reviews());
         loop {
             let result = self.cycle().await;
+            let wait = Duration::from_secs(self.settings().poll_seconds.max(15));
             {
                 let mut shared = self.shared.lock().unwrap();
                 shared.live.checking = false;
                 shared.live.error = result.err().map(|e| format!("{e:#}"));
+                // The wait starts now, after any reviews, so the sidebar can show how far along it is.
+                let started = Utc::now();
+                shared.live.wait_started = Some(started);
+                shared.live.next_check = chrono::Duration::from_std(wait).ok().map(|w| started + w);
             }
             self.emit_live();
-            let wait = Duration::from_secs(self.settings().poll_seconds.max(15));
             tokio::select! {
                 _ = tokio::time::sleep(wait) => {}
                 _ = self.wake.notified() => {}
@@ -433,33 +458,60 @@ impl Engine {
         }
     }
 
+    /// Every check interval: read where each fix's pull request stands, and
+    /// start fixes that are waiting.
+    async fn follow_fix_reviews(self: Arc<Self>) {
+        loop {
+            let settings = self.settings();
+            let wait = Duration::from_secs(settings.poll_seconds.max(15));
+            // Following fix pull requests is not new work, so it carries on while paused.
+            if settings.setup_complete && settings.triage_enabled && !self.updating() {
+                if let Ok(pat) = prr::auth::get_pat() {
+                    if let Ok(org) = AdoClient::new(settings.organization.trim(), "", &pat) {
+                        self.check_fix_reviews(&org, &settings).await;
+                    }
+                }
+                self.pump_item_fixes();
+            }
+            tokio::time::sleep(wait).await;
+        }
+    }
+
     async fn cycle(self: &Arc<Self>) -> Result<()> {
         let settings = self.settings();
-        if !settings.setup_complete || settings.paused || settings.organization.trim().is_empty() || self.updating() {
+        if !settings.setup_complete || settings.organization.trim().is_empty() || self.updating() {
+            return Ok(());
+        }
+        if settings.paused {
+            // Paused: nothing new is reviewed, triaged or fixed, but the boards are still
+            // read, so items fixed or moved elsewhere drop off.
+            if settings.triage_enabled {
+                let pat = prr::auth::get_pat()?;
+                let org = AdoClient::new(settings.organization.trim(), "", &pat)?;
+                if let Err(e) = self.triage_cycle(&org, &pat, &settings).await {
+                    let message = format!("{e:#}");
+                    self.update_triage(|t| t.error = Some(message));
+                }
+            }
             return Ok(());
         }
         self.shared.lock().unwrap().live.checking = true;
         self.emit_live();
         let pat = prr::auth::get_pat()?;
         let org = AdoClient::new(settings.organization.trim(), "", &pat)?;
-        let projects = if settings.projects.is_empty() {
-            org.list_projects().await.context(
-                "Could not list projects. Name the projects to watch in Settings, or use a token with Project & Team (Read) scope",
-            )?
-        } else {
-            settings.projects.clone()
-        };
-
+        // Each project says whether its pull requests are reviewed, and whose.
         let mut prs = Vec::new();
-        for project in &projects {
+        for project in settings.reviewed_projects() {
+            let name = &project.name;
             let mut found = org
-                .with_project(project)
+                .with_project(name)
                 .list_prs(&PrFilter::default())
                 .await
-                .with_context(|| format!("Could not list pull requests in {project}"))?;
+                .with_context(|| format!("Could not list pull requests in {name}"))?;
+            found.retain(|pr| author_matches(&project.people, &pr.created_by));
             for pr in &mut found {
                 if pr.repository.project.name.is_empty() {
-                    pr.repository.project.name = project.clone();
+                    pr.repository.project.name = name.clone();
                 }
             }
             prs.extend(found);
@@ -471,7 +523,7 @@ impl Engine {
             if !shared.tracking.baselined {
                 // Turning monitoring on should not suddenly comment on every open PR.
                 if !settings.review_existing {
-                    for pr in eligible(&prs, &settings.people) {
+                    for pr in eligible(&prs, &[]) {
                         shared.tracking.prs.entry(pr.pull_request_id).or_insert(Tracked {
                             commit: None,
                             outcome: Outcome::Baseline,
@@ -482,7 +534,7 @@ impl Engine {
                 shared.tracking.baselined = true;
                 self.store.save_tracking(&shared.tracking)?;
             }
-            let todo = plan(&prs, &settings.people, &shared.tracking);
+            let todo = plan(&prs, &[], &shared.tracking);
             shared.live.queue = todo.iter().map(|pr| pr_info(pr, &org)).collect();
             shared.live.claimed.clear();
             shared.live.last_check = Some(Utc::now());
@@ -514,6 +566,22 @@ impl Engine {
             }
             self.process(&org, &pat, &settings, pr).await?;
         }
+
+        // Board triage runs after pull requests, which always come first.
+        let settings = self.settings();
+        // Paused triage still reads the boards, so items fixed elsewhere drop off;
+        // `triage_cycle` just starts no new triage.
+        if settings.triage_enabled && !settings.paused && !self.updating() {
+            if let Err(e) = self.triage_cycle(&org, &pat, &settings).await {
+                let message = format!("{e:#}");
+                self.update_triage(|t| {
+                    t.error = Some(message);
+                    t.current = None;
+                });
+            }
+        }
+        // Fix pull requests are followed by `follow_fix_reviews`; start any fixes that are waiting.
+        self.pump_item_fixes();
         Ok(())
     }
 
@@ -833,9 +901,9 @@ impl Engine {
                 if settings.dry_run {
                     self.mark_step(5, false);
                     self.log("dim", "Dry run · no vote cast");
-                } else if !settings.approve_and_complete {
+                } else if !settings.project(&record.pr.project).is_some_and(|p| p.approve_and_complete) {
                     self.mark_step(5, false);
-                    self.log("warn", "No vote cast · \"Vote, and auto-complete clean PRs\" is turned off in Settings");
+                    self.log("warn", format!("No vote cast · \"Vote, and auto-complete clean PRs\" is turned off for {}", record.pr.project));
                 } else {
                     match self.vote(org, &client, settings, &record.pr, vote).await {
                         Ok((label, auto_complete, message)) => {
@@ -920,15 +988,16 @@ impl Engine {
         };
         client.set_vote(&pr.repo_id, pr.id, &me, value).await?;
         let label = if value == 10 { "approved" } else { "approvedWithSuggestions" };
-        let body = auto_complete_body(&me, Some(&settings.merge_strategy), settings.delete_source_branch);
+        let project = settings.project(&pr.project).cloned().unwrap_or_default();
+        let body = auto_complete_body(&me, Some(&project.merge_strategy), project.delete_source_branch);
         client.set_auto_complete(&pr.repo_id, pr.id, &body).await.context("approved, but could not set auto-complete")?;
         Ok((
             label,
             true,
             format!(
                 "Vote set: Approved · auto-complete on ({}{})",
-                settings.merge_strategy,
-                if settings.delete_source_branch { ", delete source branch" } else { "" }
+                project.merge_strategy,
+                if project.delete_source_branch { ", delete source branch" } else { "" }
             ),
         ))
     }
@@ -1221,6 +1290,61 @@ mod tests {
         assert_eq!(step_for_stage("Saving review"), 3);
     }
 
+    /// Runs the migration on a real settings file: `WARDEN_SETTINGS=… cargo test -- --ignored real_settings`.
+    #[test]
+    #[ignore]
+    fn real_settings_migrate() {
+        let path = std::env::var("WARDEN_SETTINGS").expect("set WARDEN_SETTINGS");
+        let mut settings: Settings = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        settings.normalise();
+        for c in &settings.project_configs {
+            println!(
+                "{} | review {} people {:?} vote {} merge {} delete {} | triage {} auto {} sprint {} post {} states {:?} types {:?} | areas {:?}",
+                c.name, c.review, c.people, c.approve_and_complete, c.merge_strategy, c.delete_source_branch, c.triage, c.auto_fix,
+                c.current_sprint, c.post_results, c.states, c.types,
+                c.areas.iter().map(|a| format!("{} -> {} @ {} (local {}, all {})", a.area_path, a.repo, a.branch, a.local_path, a.copy_local_only)).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn older_settings_move_into_one_config_per_project() {
+        let mut settings: Settings = serde_json::from_value(serde_json::json!({
+            "organization": "o", "projects": ["Clinic", "Acme"], "people": ["Shaun Sheppard"],
+            "approveAndComplete": true, "mergeStrategy": "squash", "deleteSourceBranch": true,
+            "triageEnabled": true, "triageProjects": ["Acme", "Clinic"], "triageAutoFix": true,
+            "triageStates": ["To Do", "New"], "triageTypes": ["Bug", "Story Bug"],
+            "areaMappings": [
+                { "project": "Acme", "areaPath": "Acme", "repo": "Web", "branch": "dev", "localPath": "~/x", "copyLocalOnly": true },
+                { "project": "Clinic", "areaPath": "Clinic", "repo": "Clinic_Web", "branch": "dev" }
+            ]
+        }))
+        .unwrap();
+        settings.normalise();
+        let names: Vec<&str> = settings.project_configs.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["Clinic", "Acme"]);
+        let sg = settings.project("acme").unwrap();
+        assert!(sg.review && sg.triage && sg.auto_fix && sg.approve_and_complete && sg.delete_source_branch);
+        assert_eq!(sg.merge_strategy, "squash");
+        assert_eq!(sg.people, ["Shaun Sheppard"]);
+        assert_eq!(sg.types, ["Bug", "Story Bug"]);
+        assert_eq!(sg.areas.len(), 1);
+        assert_eq!(sg.areas[0].repo, "Web");
+        assert!(sg.areas[0].copy_local_only);
+        assert_eq!(settings.all_areas().len(), 2);
+        assert!(settings.triage_enabled);
+        // Moved once: the old lists are emptied, so nothing is moved again.
+        assert!(settings.projects.is_empty() && settings.area_mappings.is_empty() && settings.triage_projects.is_empty());
+        let again = settings.clone();
+        settings.normalise();
+        assert_eq!(settings, again);
+
+        // Triage off for every project means triage is off.
+        settings.project_configs.iter_mut().for_each(|c| c.triage = false);
+        settings.normalise();
+        assert!(!settings.triage_enabled);
+    }
+
     #[test]
     fn settings_and_history_persist() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1228,6 +1352,7 @@ mod tests {
         assert_eq!(engine.live().status, "setup");
         let mut settings = engine.settings();
         assert!(!settings.approve_and_complete, "approving must be opt-in");
+        assert!(!ProjectConfig::default().approve_and_complete, "approving must be opt-in for each project");
         settings.organization = "org".into();
         settings.setup_complete = true;
         settings.paused = true;

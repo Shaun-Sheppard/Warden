@@ -292,6 +292,128 @@ pub fn pending_changes(dir: &Path) -> Result<(String, Vec<FileChange>)> {
     Ok((text, files))
 }
 
+/// Throws away everything not staged: edits to tracked files and new files
+/// that are not ignored. What is staged is kept. Used after running a
+/// repository's tests, so files they write never end up in a commit.
+pub fn discard_unstaged(dir: &Path) -> Result<()> {
+    let mut checkout = git(dir);
+    checkout.args(["checkout", "--", "."]);
+    run(checkout, "checkout")?;
+    let mut clean = git(dir);
+    clean.args(["clean", "-fdq"]);
+    run(clean, "clean").map(|_| ())
+}
+
+/// Folders never copied as local-only files: dependencies and build output,
+/// which a fix's setup command recreates, and editor state.
+pub const NOT_COPIED: [&str; 16] = [
+    ".git", "node_modules", "bin", "obj", "dist", "out", "build", ".angular", ".vs", ".vscode", ".idea", "packages", "coverage",
+    "TestResults", ".nx", ".cache",
+];
+
+/// Files in `dir` that git does not track: untracked ones and ignored ones
+/// (local settings, `.env` files), with ignored folders listed once, and
+/// dependencies and build output left out. Paths use `/`.
+pub fn local_only_files(dir: &Path) -> Result<Vec<String>> {
+    let list = |ignored: bool| -> Result<Vec<String>> {
+        let mut cmd = git(dir);
+        cmd.args(["ls-files", "--others", "--exclude-standard", "--directory", "-z"]);
+        if ignored {
+            cmd.arg("--ignored");
+        }
+        Ok(run(cmd, "ls-files")?.split('\0').filter(|p| !p.is_empty()).map(String::from).collect())
+    };
+    let mut paths = list(false)?;
+    paths.extend(list(true)?);
+    paths.retain(|p| !p.trim_end_matches('/').split('/').any(|part| NOT_COPIED.iter().any(|n| n.eq_ignore_ascii_case(part))));
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+/// Adds new, not-ignored dependency and build-output folders in `dir`
+/// (`bin`, `obj`, `TestResults`, `dist`...) to the clone's exclude list, so
+/// what a build or test run left behind is never committed.
+pub fn exclude_build_output(dir: &Path) -> Result<()> {
+    let mut others = git(dir);
+    others.args(["ls-files", "--others", "--exclude-standard", "-z"]);
+    let mut folders: Vec<String> = Vec::new();
+    for path in run(others, "ls-files")?.split('\0').filter(|p| !p.is_empty()) {
+        let parts: Vec<&str> = path.split('/').collect();
+        // Only folders count: a file that happens to be called `build` is real work.
+        if let Some(at) = parts[..parts.len() - 1].iter().position(|part| NOT_COPIED.iter().any(|n| n.eq_ignore_ascii_case(part))) {
+            let folder = format!("/{}/", parts[..=at].join("/"));
+            if !folders.contains(&folder) {
+                folders.push(folder);
+            }
+        }
+    }
+    if folders.is_empty() {
+        return Ok(());
+    }
+    let mut common = git(dir);
+    common.args(["rev-parse", "--git-common-dir"]);
+    let common = PathBuf::from(run(common, "rev-parse")?.trim());
+    let common = if common.is_absolute() { common } else { dir.join(common) };
+    let exclude = common.join("info").join("exclude");
+    let mut text = std::fs::read_to_string(&exclude).unwrap_or_default();
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    for folder in folders {
+        if !text.lines().any(|l| l == folder) {
+            text.push_str(&folder);
+            text.push('\n');
+        }
+    }
+    std::fs::create_dir_all(exclude.parent().unwrap()).with_context(|| format!("Could not create {}", common.display()))?;
+    std::fs::write(&exclude, text).with_context(|| format!("Could not write {}", exclude.display()))
+}
+
+/// Keeps everything currently changed or new in `dir` out of commits, for
+/// good: changed tracked files are marked skip-worktree, and new files (or
+/// folders) are added to the clone's exclude list. Used on local files copied
+/// into a fix's worktree and on what its setup command writes, such as
+/// `node_modules` or an updated lock file. Returns the paths it protected.
+pub fn protect_local_changes(dir: &Path) -> Result<Vec<String>> {
+    let mut changed = git(dir);
+    changed.args(["diff", "--name-only", "-z"]);
+    let tracked: Vec<String> = run(changed, "diff --name-only")?.split('\0').filter(|p| !p.is_empty()).map(String::from).collect();
+    if !tracked.is_empty() {
+        let mut skip = git(dir);
+        skip.args(["update-index", "--skip-worktree", "--"]).args(&tracked);
+        run(skip, "update-index")?;
+    }
+
+    let mut others = git(dir);
+    others.args(["ls-files", "--others", "--exclude-standard", "--directory", "-z"]);
+    let untracked: Vec<String> = run(others, "ls-files")?.split('\0').filter(|p| !p.is_empty()).map(String::from).collect();
+    if !untracked.is_empty() {
+        let mut common = git(dir);
+        common.args(["rev-parse", "--git-common-dir"]);
+        let common = PathBuf::from(run(common, "rev-parse")?.trim());
+        let common = if common.is_absolute() { common } else { dir.join(common) };
+        let exclude = common.join("info").join("exclude");
+        let existing = std::fs::read_to_string(&exclude).unwrap_or_default();
+        let mut text = existing.clone();
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        for path in &untracked {
+            let pattern = format!("/{path}");
+            if !existing.lines().any(|l| l == pattern) {
+                text.push_str(&pattern);
+                text.push('\n');
+            }
+        }
+        if text != existing {
+            std::fs::create_dir_all(exclude.parent().unwrap()).with_context(|| format!("Could not create {}", common.display()))?;
+            std::fs::write(&exclude, text).with_context(|| format!("Could not write {}", exclude.display()))?;
+        }
+    }
+    Ok(tracked.into_iter().chain(untracked).collect())
+}
+
 /// Commits the staged changes and returns the new commit id.
 pub fn commit(dir: &Path, name: &str, email: &str, message: &str) -> Result<String> {
     let mut cmd = git(dir);

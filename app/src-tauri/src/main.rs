@@ -14,7 +14,7 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 
 use engine::{Change, Engine};
-use model::{Fix, Live, Record, Settings};
+use model::{Fix, Live, Record, Settings, TriageState};
 use prr::ado::{AdoClient, PrFilter};
 use store::Store;
 
@@ -96,6 +96,12 @@ fn default_prompt() -> &'static str {
     prr::review::DEFAULT_GUIDANCE
 }
 
+/// The built-in triage guidance, shown as the starting point for a custom triage prompt.
+#[tauri::command]
+fn default_triage_prompt() -> &'static str {
+    engine::triage::DEFAULT_TRIAGE_GUIDANCE
+}
+
 #[tauri::command]
 fn get_live(engine: Shared) -> Live {
     engine.live()
@@ -136,6 +142,142 @@ fn is_busy(engine: Shared) -> bool {
 #[tauri::command]
 fn end_update(engine: Shared) {
     engine.end_update();
+}
+
+#[tauri::command]
+fn get_triage(engine: Shared) -> TriageState {
+    engine.triage()
+}
+
+/// Queues Claude to fix a triaged work item: branch, fix, tests, pull request.
+#[tauri::command]
+async fn fix_work_item(engine: Shared<'_>, id: u64, notes: Option<String>) -> Result<(), String> {
+    engine.fix_work_item(id, notes.as_deref().unwrap_or("")).map_err(err)
+}
+
+/// Queues Claude to address the open comments on the pull request a fix opened.
+#[tauri::command]
+async fn address_pr_feedback(engine: Shared<'_>, id: u64) -> Result<(), String> {
+    engine.address_pr_feedback(id).map_err(err)
+}
+
+/// Queues every failed fix again.
+#[tauri::command]
+async fn retry_failed_fixes(engine: Shared<'_>) -> Result<usize, String> {
+    engine.retry_failed_fixes().map_err(err)
+}
+
+/// Moves a triaged item to "AI can fix" (`ai`) or "For a person".
+#[tauri::command]
+async fn set_recommendation(engine: Shared<'_>, id: u64, ai: bool) -> Result<(), String> {
+    engine.set_recommendation(id, ai).map_err(err)
+}
+
+/// Forgets a triage item; the next check adds it back if it still qualifies.
+#[tauri::command(async)]
+fn forget_item(engine: Shared, id: u64) -> Result<(), String> {
+    engine.forget_item(id).map_err(err)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ItemCommentView {
+    author: String,
+    date: String,
+    text: String,
+}
+
+/// The latest comments on a work item in the triage list, newest first.
+#[tauri::command]
+async fn item_comments(engine: Shared<'_>, id: u64) -> Result<Vec<ItemCommentView>, String> {
+    let project = engine
+        .triage()
+        .records
+        .iter()
+        .find(|r| r.id == id)
+        .map(|r| r.project.clone())
+        .ok_or_else(|| "That work item is not in the triage list.".to_string())?;
+    let token = prr::auth::get_pat().map_err(err)?;
+    let client = AdoClient::new(engine.settings().organization.trim(), &project, &token).map_err(err)?;
+    let mut comments = client.work_item_comments(id, 30).await.map_err(err)?;
+    comments.reverse();
+    Ok(comments.into_iter().map(|c| ItemCommentView { author: c.author, date: c.date, text: c.text }).collect())
+}
+
+/// The projects in the organization, for adding one in Settings.
+#[tauri::command]
+async fn list_projects(engine: Shared<'_>) -> Result<Vec<String>, String> {
+    let token = prr::auth::get_pat().map_err(err)?;
+    let client = AdoClient::new(engine.settings().organization.trim(), "", &token).map_err(err)?;
+    client.list_projects().await.map_err(err)
+}
+
+#[tauri::command(async)]
+fn triage_again(engine: Shared, id: u64) -> Result<(), String> {
+    engine.triage_again(id).map_err(err)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectStructure {
+    areas: Vec<String>,
+    repos: Vec<RepoChoice>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RepoChoice {
+    name: String,
+    default_branch: String,
+}
+
+/// Area paths and repositories in a project, for the mapping editor in Settings.
+#[tauri::command]
+async fn project_structure(engine: Shared<'_>, project: String) -> Result<ProjectStructure, String> {
+    let token = prr::auth::get_pat().map_err(err)?;
+    let client = AdoClient::new(engine.settings().organization.trim(), &project, &token).map_err(err)?;
+    let areas = client.area_paths().await.map_err(err)?;
+    let repos = client
+        .repositories()
+        .await
+        .map_err(err)?
+        .into_iter()
+        .map(|r| RepoChoice {
+            default_branch: r.default_branch.unwrap_or_default().trim_start_matches("refs/heads/").to_string(),
+            name: r.name,
+        })
+        .collect();
+    Ok(ProjectStructure { areas, repos })
+}
+
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct TriageChoices {
+    types: Vec<String>,
+    states: Vec<String>,
+}
+
+/// The work item types and states used across the given projects, for the triage settings.
+#[tauri::command]
+async fn triage_choices(engine: Shared<'_>, projects: Vec<String>) -> Result<TriageChoices, String> {
+    let token = prr::auth::get_pat().map_err(err)?;
+    let organization = engine.settings().organization.trim().to_string();
+    let mut choices = TriageChoices::default();
+    for project in projects.iter().filter(|p| !p.trim().is_empty()) {
+        let client = AdoClient::new(&organization, project, &token).map_err(err)?;
+        for kind in client.work_item_types().await.map_err(err)? {
+            if !choices.types.iter().any(|t| t.eq_ignore_ascii_case(&kind.name)) {
+                choices.types.push(kind.name);
+            }
+            for state in kind.states {
+                if !choices.states.iter().any(|s| s.eq_ignore_ascii_case(&state)) {
+                    choices.states.push(state);
+                }
+            }
+        }
+    }
+    choices.types.sort_by_key(|t| t.to_lowercase());
+    Ok(choices)
 }
 
 #[tauri::command]
@@ -338,6 +480,9 @@ fn main() {
                         Change::Fixes(fixes) => {
                             let _ = handle.emit("fixes", fixes);
                         }
+                        Change::Triage(triage) => {
+                            let _ = handle.emit("triage", triage);
+                        }
                         Change::Notify { title, body } => {
                             use tauri_plugin_notification::NotificationExt;
                             let _ = handle.notification().builder().title(title).body(body).show();
@@ -362,6 +507,7 @@ fn main() {
             get_settings,
             save_settings,
             default_prompt,
+            default_triage_prompt,
             get_live,
             get_history,
             check_now,
@@ -371,6 +517,17 @@ fn main() {
             is_busy,
             end_update,
             get_fixes,
+            get_triage,
+            triage_again,
+            fix_work_item,
+            address_pr_feedback,
+            retry_failed_fixes,
+            set_recommendation,
+            forget_item,
+            list_projects,
+            item_comments,
+            project_structure,
+            triage_choices,
             start_fix,
             push_fix,
             discard_fix,

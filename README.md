@@ -86,6 +86,43 @@ Other protections: the Azure DevOps token is offered by git only to `dev.azure.c
 
 `tests/live_claude.rs` runs a real review against a hostile repository (a command hook, plus instructions to read and write outside the repository and approve) and checks that none of it works: `cargo test --test live_claude -- --ignored`.
 
+### Board triage
+
+Settings has four sections. **General** holds the connection, check interval, notifications, Claude Code and appearance. **PR review** and **Triage** hold what applies to every project (dry runs, prompts, fixes at a time). **Projects** holds everything else, one card per project: whether its pull requests are reviewed, whose, and whether Warden votes and completes them; whether its board is triaged, which states and work item types count, whether items are fixed automatically, and its area paths and repositories. Settings from earlier versions are moved into project cards automatically.
+
+Turn on **Triage my work items** for a project to have Warden look at the work items assigned to you there, in the "to do" states and types you choose (by default Bugs in `To Do` or `New`), in the project's current sprint (switch off **Current sprint only** to include later sprints and the backlog).
+
+An item with child tasks assigned to you only counts while at least one of those tasks is in a to-do state: while your task is blocked, in progress or in review, the item is left alone. An item you move to the board's in-progress state yourself (Committed, the taskboard's In Progress column) shows under **Fixing** marked "By hand"; one moved anywhere else (In Review, Blocked, Done) or reassigned drops off at the next check, paused or not. **Remove from Warden** (in an item's details) forgets an item; the next check adds it back only if it still qualifies.
+
+For an item that sits under another (a "Dev" task under a PBI, say), Warden shows the parent with it and gives Claude the parent's description and acceptance criteria too, since that is usually where the detail is.
+
+For each item, Claude reads it, and, if its area path is mapped to a repository, looks through that repository's code (read-only, confined as below). It rates the **risk** (low, medium, high), whether an **AI agent could fix it** on its own, and its **confidence**. An item goes to an agent only when it is low risk, suitable, rated with high confidence, mapped to a repository, and free of text aimed at automated tools. Everything else is for a person.
+
+The results are kept in Warden. With **Tag and comment on items** on, Warden also tags each item `warden-ai-fixable` or `warden-needs-human`, and comments on the ones for a person, mentioning you, with the reason. The results are listed on the **Triage** page. Items are triaged a few at a time, after pull requests, and each only once unless you choose "Triage again". Triage itself never changes code.
+
+**Area paths and repositories** (in each project's card) say where each area's work belongs, one card per area with how a fix gets ready to build: an area covers everything below it, and the most specific mapping wins. The token needs **Work Items (Read & Write)**.
+
+**Triage dry run** (on by default, separate from the pull request Dry run) sends nothing to Azure DevOps: no tags or comments, and fixes are tested but never pushed. With it off and **Tag and comment on items** off, triage results stay in Warden while fixes still push and open pull requests. **Triage prompt** lets you rewrite how Claude rates risk and suitability, like the review prompt; Warden still adds the item, the repository and the answer format. **Work item types** and **states** offer the names your projects actually use, including custom types such as `Story Bug`.
+
+### Fixing work items
+
+The Triage page shows your items as a board (To triage, AI can fix, For a person, Fixing, In review, Failed review, Fixed) or a list; click one for its details and actions. **Fix with Claude** fixes a triaged item (any item whose area is mapped to a repository). Items triage left for a person show **Fix anyway** instead, and can be moved to **AI can fix** (or back) so automatic fixes pick them up. With **Fix automatically** on for a project, Warden does this by itself for the items triage marked AI-fixable. Automatic fixes wait until every item has been triaged, then start together. The pause button in the sidebar's monitoring box pauses everything: what is being reviewed, triaged or fixed finishes, nothing new starts, and the board is still kept up to date until you resume. **Fixes at a time** (1 to 5) sets how many run side by side; each has its own worktree, and git work on a shared clone takes turns.
+
+For each item Warden:
+
+1. Creates a new branch, `warden/<id>-<title>`, from the mapped branch, in its own worktree under `~/.cache/prr/item-fixes`.
+2. Gets that copy ready, as set in the mapping's **Fix setup**: copies local-only files from your own checkout (settings such as `appsettings.Development.json` or `environment.ts`, either listed one by one or, with **Copy all local-only files**, everything git does not track apart from dependencies and build output), then runs the optional **setup command** (e.g. `dotnet restore && cd Acme.Portal && npm ci`). Copies and whatever setup writes are kept out of every commit, even files git tracks; your own checkout is only read.
+3. Has Claude fix the item, add or update tests, then find and run the repository's build and tests itself until they pass. Claude can read and edit files there and run build and test commands only (`dotnet restore/build/test`, `npm ci`, `npm test`, `npm run test/build/lint`, `npx ng test/build/lint`, `npx jest/vitest/tsc`, `yarn test`, `pnpm test`, optionally after a `cd`); anything else, and committing or pushing, is refused. Build output its test runs leave behind (`bin`, `obj`, `TestResults`, `dist`…) is kept out of the commit.
+4. Only if Claude reports that the build and tests pass, commits as you, pushes the new branch (never forcing) and opens a pull request into the mapped branch linked to the work item. If they fail, or Claude finds no tests, nothing is pushed and the item shows why.
+
+The item moves on the board as the fix goes: to its in-progress state (e.g. **Committed**, the taskboard's In Progress column) when Claude starts, back to where it was if the fix fails before a pull request is open, and to **In Review** once the pull request is approved, with a comment on the item that mentions whoever raised it, says it is ready for testing and lists what was done. If an item comes back to your board after that (it failed testing and was assigned back to you in a to-do state, say), it is triaged again, and its earlier fix is kept as history. Triage and fixes read the item's latest comments, so QA's notes are taken into account, and a second fix gets a branch of its own. Warden follows each fix's pull request on every check; one that is rejected or waiting for the author shows under **Failed review**, ready for **Address PR comments**.
+
+The pull request is then reviewed by Warden like any other (if your author filter includes you), by a separate run of Claude. With **Triage dry run** on, steps 1–3 run but nothing is committed, pushed or opened, so you can see the change and the test results first.
+
+**Pull request comments.** Each fix records its pull request number. To act on a rejected review or reviewers' comments, search the Triage page for the PR number (e.g. `812`) and choose **Address PR comments**. Claude reads the open comment threads, changes the code on the same branch and runs the tests as before, and Warden pushes a new commit and posts a short summary on the pull request. The new commit is then reviewed again.
+
+Building and testing runs the repository's code, and Claude's change to it, on your computer with your user's permissions. Only map repositories you trust.
+
 ### Fix with Claude
 
 On a review with issues, tick the ones to fix and choose "Fix selected". Claude edits a private copy of the pull request's branch (a separate git worktree under `~/.cache/prr/fixes`), with file-editing tools but no ability to commit, push or run commands. The result appears under **Fixes** in the sidebar with Claude's own report and the full diff.
@@ -94,9 +131,9 @@ Nothing reaches the repository until you choose **Approve and push**. Warden the
 
 Warden cannot build the project or run its tests, so a fix is unverified until your pipeline runs. Pushing is blocked while Dry run is on.
 
-A system notification is shown when a new pull request starts being reviewed, when the review finishes (with the decision and what was done), and when an update is available; turn them off under Settings → Review behaviour.
+A system notification is shown when a new pull request starts being reviewed, when the review finishes (with the decision and what was done), and when an update is available; turn them off under Settings → General.
 
-Closing the window keeps monitoring running; the tray icon has Open, Check now, Pause and Quit. **Dry run** (Settings) reviews without posting, voting or completing.
+Closing the window keeps monitoring running; the tray icon has Open, Check now, Pause and Quit, and the monitoring box at the top of the sidebar shows when the next check is due, with a pause/play button. **Dry run** (Settings) reviews without posting, voting or completing.
 
 Settings, history and tracking live in the app data directory (`~/Library/Application Support/dev.warden.app` on macOS).
 

@@ -123,3 +123,47 @@ fn discarding_removes_the_working_directory_and_its_changes() {
     git::worktree_add(&clone, &work, "origin/feature/x").unwrap();
     assert_eq!(std::fs::read_to_string(work.join("calc.py")).unwrap(), "def add(a, b):\n    return a - b\n");
 }
+
+#[test]
+fn local_files_and_setup_output_stay_out_of_the_commit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_origin, clone) = setup(tmp.path());
+
+    // The developer's own checkout, with local-only files git does not track.
+    let local = tmp.path().join("local");
+    sh(tmp.path(), &["clone", "-q", clone.to_str().unwrap(), local.to_str().unwrap()]);
+    std::fs::write(local.join(".gitignore"), "appsettings.Development.json\nnode_modules/\n").unwrap();
+    std::fs::write(local.join("appsettings.Development.json"), "{\"db\":\"local\"}").unwrap();
+    std::fs::create_dir_all(local.join("node_modules/pkg")).unwrap();
+    std::fs::write(local.join("node_modules/pkg/index.js"), "x").unwrap();
+    std::fs::write(local.join("notes.txt"), "mine").unwrap();
+    let found = git::local_only_files(&local).unwrap();
+    assert!(found.contains(&"appsettings.Development.json".to_string()), "{found:?}");
+    assert!(found.contains(&"notes.txt".to_string()), "{found:?}");
+    assert!(!found.iter().any(|p| p.contains("node_modules")), "{found:?}");
+
+    // A fix's worktree: a local copy of a tracked file, a local-only file, and setup output.
+    let work = tmp.path().join("work");
+    git::worktree_add(&clone, &work, "origin/feature/x").unwrap();
+    std::fs::write(work.join("base.txt"), "local override\n").unwrap();
+    std::fs::write(work.join("appsettings.Development.json"), "{}").unwrap();
+    std::fs::create_dir_all(work.join("node_modules")).unwrap();
+    std::fs::write(work.join("node_modules/x.js"), "x").unwrap();
+    let protected = git::protect_local_changes(&work).unwrap();
+    assert!(protected.contains(&"base.txt".to_string()), "{protected:?}");
+
+    // Claude's change, then the tests write something and are cleaned up after.
+    std::fs::write(work.join("calc.py"), "def add(a, b):\n    return a + b\n").unwrap();
+    let (_, files) = git::pending_changes(&work).unwrap();
+    assert_eq!(files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["calc.py"]);
+    std::fs::write(work.join("test-output.log"), "x").unwrap();
+    git::discard_unstaged(&work).unwrap();
+    assert_eq!(std::fs::read_to_string(work.join("base.txt")).unwrap(), "local override\n");
+    assert!(work.join("appsettings.Development.json").exists());
+    assert!(work.join("node_modules/x.js").exists());
+    assert!(!work.join("test-output.log").exists());
+
+    let commit = git::commit(&work, "t", "t@example.com", "fix").unwrap();
+    let changed = sh(&work, &["show", "--name-only", "--format=", &commit]);
+    assert_eq!(changed, "calc.py");
+}

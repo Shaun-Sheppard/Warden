@@ -1,6 +1,6 @@
 // Sample data and a scripted "live review" for working on the UI in a browser.
 import type { Api } from "./api";
-import type { Fix, HistoryRecord, Issue, Live, LogLine, PrInfo, Review, Settings } from "./types";
+import type { Fix, HistoryRecord, Issue, Live, LogLine, PrInfo, Review, Settings, TriageRecord, TriageState, ItemFix } from "./types";
 
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
 
@@ -77,10 +77,27 @@ const SCRIPT: [number, LogLine["kind"], string][] = [
 ];
 
 let settings: Settings = {
-  organization: "harbourline", projects: ["Payments", "Customer Web", "Platform"],
-  people: ["Priya Nair", "Tom Okafor", "Aisha Rahman"], pollSeconds: 60, approveAndComplete: true,
+  organization: "harbourline", projects: [],
+  people: [], pollSeconds: 60, approveAndComplete: true,
   mergeStrategy: "noFastForward", deleteSourceBranch: true, cliPath: "", dryRun: false, paused: false,
-  reviewExisting: false, setupComplete: !location.search.includes("setup"), theme: "system", mentionAuthor: true, reviewPrompt: "", notifications: true,
+  reviewExisting: false, setupComplete: !location.search.includes("setup"), theme: "system", mentionAuthor: true, reviewPrompt: "", triagePrompt: "", triageCurrentSprint: true, triageDryRun: true, triageAutoFix: false, triagePaused: false, triageMaxFixes: 1, triagePostResults: false, notifications: true,
+  triageEnabled: !location.search.includes("notriage"), triageProjects: [], triageStates: ["To Do", "New"], triageTypes: ["Bug"],
+  areaMappings: [],
+  projectConfigs: [
+    {
+      name: "Payments", review: true, people: ["Priya Nair", "Tom Okafor"], approveAndComplete: true, mergeStrategy: "noFastForward", deleteSourceBranch: true,
+      triage: !location.search.includes("notriage"), autoFix: true, currentSprint: true, postResults: false, states: ["To Do", "New"], types: ["Bug", "Story Bug"],
+      areas: [{ project: "Payments", areaPath: "Payments\\Refunds", repo: "payments-api", branch: "main", localPath: "~/Projects/payments-api", copyPaths: ["Payments.Api/appsettings.Development.json"], copyLocalOnly: false, setupCommand: "dotnet restore" }],
+    },
+    {
+      name: "Customer Web", review: true, people: [], approveAndComplete: false, mergeStrategy: "squash", deleteSourceBranch: false,
+      triage: !location.search.includes("notriage"), autoFix: false, currentSprint: true, postResults: false, states: ["To Do", "New"], types: ["Bug"], areas: [],
+    },
+    {
+      name: "Platform", review: true, people: [], approveAndComplete: false, mergeStrategy: "noFastForward", deleteSourceBranch: false,
+      triage: false, autoFix: false, currentSprint: true, postResults: false, states: ["To Do", "New"], types: ["Bug"], areas: [],
+    },
+  ],
 };
 
 let tick = location.search.includes("idle") ? -1 : 5;
@@ -91,12 +108,19 @@ const liveHandlers = new Set<(live: Live) => void>();
 const historyHandlers = new Set<(h: HistoryRecord[]) => void>();
 const now = () => new Date().toTimeString().slice(0, 8);
 
+/** The mock checks every 60 seconds from when it started. */
+function nextCheck() {
+  const started = Date.parse(startedAt);
+  const since = (Date.now() - started) % 60000;
+  return { waitStarted: new Date(Date.now() - since).toISOString(), nextCheck: new Date(Date.now() - since + 60000).toISOString() };
+}
+
 function live(): Live {
   if (tick < 0) {
     const failing = location.search.includes("error");
     return {
       status: !settings.setupComplete ? "setup" : settings.paused ? "paused" : failing ? "error" : "idle",
-      lastCheck, checking, queue: [], claimed: [], current: null,
+      lastCheck, checking, queue: [], claimed: [], current: null, ...nextCheck(),
       error: failing ? "Azure DevOps rejected the Personal Access Token (HTTP 401). It is invalid or expired." : null,
     };
   }
@@ -105,7 +129,7 @@ function live(): Live {
   const done = tick > SCRIPT.length;
   return {
     status: !settings.setupComplete ? "setup" : done ? (settings.paused ? "paused" : "idle") : "reviewing",
-    lastCheck, checking, error: null,
+    lastCheck, checking, error: null, ...nextCheck(),
     claimed: [{ pr: pr(4822, "Tighten refund audit logging", "Payments", "payments-api", "Tom Okafor", "feature/refund-audit"), by: "Alex Morgan" }],
     queue: [pr(2293, "Add skeleton loaders to account page", "Customer Web", "web-portal", "Aisha Rahman", "feature/account-skeletons")],
     current: {
@@ -188,6 +212,64 @@ function sampleFix(status: Fix["status"]): Fix {
   };
 }
 
+const triageItem = (id: number, title: string, project: string, area: string, extra: Partial<TriageRecord>): TriageRecord => ({
+  id, project, kind: "Bug", title, state: "To Do", areaPath: area, priority: 2,
+  url: `https://dev.azure.com/harbourline/${project}/_workitems/edit/${id}`, status: "done",
+  risk: null, aiSuitable: null, confidence: null, recommendation: null, summary: "", reason: "", approach: "", files: [],
+  repo: null, branch: null, manipulation: null, tagged: true, commented: false, error: null, attempts: 0,
+  triagedAt: minutesAgo(5), durationSecs: 48, fix: null, ...extra,
+});
+
+const emptyFix: ItemFix = {
+  status: "queued", automatic: false, feedback: false, notes: "", feedbackRounds: [], branch: "", target: "", repo: "", baseCommit: null, commit: null, prId: null, prUrl: null, movedTo: null,
+  report: "", files: [], diff: "", diffTruncated: false, tests: null, rounds: 0, error: null, warning: null, startedAt: minutesAgo(0), finishedAt: null, lines: [],
+};
+
+let triage: TriageState = {
+  current: 5207, lastCheck: minutesAgo(0.3), error: null,
+  lines: [
+    { time: now(), kind: "info", text: "Bug 5207: Refund email shows the wrong currency symbol" },
+    { time: now(), kind: "cmd", text: "Getting the latest payments-api (main)" },
+    { time: now(), kind: "cmd", text: "Claude is assessing the item" },
+    { time: now(), kind: "info", text: "Grep currencySymbol" },
+  ],
+  records: [
+    triageItem(5207, "Refund email shows the wrong currency symbol", "Payments", "Payments\\Refunds", { status: "triaging", tagged: false, triagedAt: null }),
+    triageItem(5199, "Typo in refund confirmation message", "Payments", "Payments\\Refunds", {
+      risk: "low", aiSuitable: true, confidence: "high", recommendation: "ai", repo: "payments-api", branch: "main",
+      summary: "The confirmation message says 'recieved' instead of 'received'.",
+      reason: "A one-word change to a resource string with an existing snapshot test.",
+      approach: "Correct the string in RefundMessages.resx and update the snapshot.", files: ["src/Refunds/RefundMessages.resx"],
+    }),
+    triageItem(5188, "Refund totals double-count partial refunds", "Payments", "Payments\\Refunds", {
+      risk: "high", aiSuitable: false, confidence: "high", recommendation: "human", commented: true, repo: "payments-api", branch: "main",
+      summary: "Partial refunds are added twice when the totals report is generated.",
+      reason: "Changes how money is totalled across reports and exports; needs a person who knows the reconciliation rules.",
+    }),
+    triageItem(2311, "Account page spinner never stops on network error", "Customer Web", "Customer Web\\Account", {
+      risk: "low", aiSuitable: true, confidence: "medium", recommendation: "human", commented: true,
+      summary: "The loading state is not cleared when the order history request fails.",
+      reason: "Likely a small fix, but no repository is mapped for this area yet.",
+    }),
+    triageItem(5150, "Refund list sorts oldest first", "Payments", "Payments\\Refunds", {
+      status: "left", state: "In Progress", risk: "low", aiSuitable: true, confidence: "high", recommendation: "ai", repo: "payments-api", branch: "main",
+      summary: "The refund list is sorted ascending by date.", reason: "One sort order and a unit test.",
+      fix: {
+        ...emptyFix, status: "done", branch: "warden/5150-refund-list-sorts-oldest-first", target: "main", repo: "payments-api", commit: "9f1c2e7",
+        prId: 812, prUrl: "https://dev.azure.com/harbourline/Payments/_git/payments-api/pullrequest/812", movedTo: "Committed", rounds: 2, review: "rejected",
+        report: "The list query ordered by CreatedAt ascending.\nChanged it to descending.\nAdded RefundListTests.SortsNewestFirst.",
+        files: [{ path: "src/Refunds/RefundList.cs", additions: 1, deletions: 1 }, { path: "tests/Refunds/RefundListTests.cs", additions: 18, deletions: 0 }],
+        tests: { command: "dotnet test", passed: true, output: "Passed!  - Failed: 0, Passed: 214, Skipped: 0", durationSecs: 74 },
+        finishedAt: minutesAgo(40),
+      },
+    }),
+    triageItem(5230, "Dev", "Payments", "Payments\\Refunds", { kind: "Task", status: "pending", tagged: false, triagedAt: null,
+      parent: { id: 5229, kind: "Product Backlog Item", title: "Signed incomplete refund: hold it for an admin, with close, rebook or void decisions" } }),
+    triageItem(5172, "Export to CSV times out for large merchants", "Payments", "Payments\\Invoices", { status: "pending", tagged: false, triagedAt: null }),
+  ],
+};
+const triageHandlers = new Set<(t: TriageState) => void>();
+
 let fixes: Fix[] = location.search.includes("fix") ? [sampleFix("ready")] : [];
 const fixHandlers = new Set<(f: Fix[]) => void>();
 const setFixes = (next: Fix[]) => { fixes = next; fixHandlers.forEach((h) => h(fixes)); };
@@ -216,6 +298,60 @@ export const mockApi: Api = {
     return later(undefined, 600);
   },
   getFixes: () => later(fixes),
+  getTriage: () => later(triage),
+  fixWorkItem: (id, notes) => {
+    const set = (fix: Partial<ItemFix>) => {
+      triage = { ...triage, records: triage.records.map((r) => (r.id === id ? { ...r, fix: { ...(r.fix ?? emptyFix), ...fix } } : r)) };
+      triageHandlers.forEach((h) => h(triage));
+    };
+    set({ ...emptyFix, notes: notes ?? "", status: "fixing", branch: `warden/${id}-fix`, target: "main", repo: "payments-api", lines: [{ time: now(), kind: "cmd", text: "Claude is fixing the item" }] });
+    setTimeout(() => set({ status: "testing", lines: [{ time: now(), kind: "cmd", text: "Running dotnet test" }] }), 2500);
+    setTimeout(() => set({ status: "dryRun", report: "Fixed the spelling.\nUpdated the snapshot test.", files: [{ path: "src/Refunds/RefundMessages.resx", additions: 1, deletions: 1 }],
+      diff: "--- a/src/Refunds/RefundMessages.resx\n+++ b/src/Refunds/RefundMessages.resx\n@@ -4 +4 @@\n-recieved\n+received\n",
+      tests: { command: "dotnet test", passed: true, output: "Passed!", durationSecs: 41 }, rounds: 1, finishedAt: now() }), 5000);
+    return later(undefined);
+  },
+  addressPrFeedback: (id) => {
+    const set = (fix: Partial<ItemFix>) => {
+      triage = { ...triage, records: triage.records.map((r) => (r.id === id && r.fix ? { ...r, fix: { ...r.fix, ...fix } } : r)) };
+      triageHandlers.forEach((h) => h(triage));
+    };
+    set({ status: "fixing", feedback: true, lines: [{ time: now(), kind: "info", text: "2 open comment thread(s) on pull request 812" }, { time: now(), kind: "cmd", text: "Claude is addressing the comments" }] });
+    setTimeout(() => {
+      const current = triage.records.find((r) => r.id === id)?.fix;
+      set({ status: "done", feedback: false, finishedAt: now(), feedbackRounds: [...(current?.feedbackRounds ?? []),
+        { at: now(), threads: 2, commit: "4be01d2", report: "Addressed: renamed sortDesc to newestFirst.\nNot addressed: the paging comment is outside this change." }] });
+    }, 3000);
+    return later(undefined);
+  },
+  listProjects: () => later(["Payments", "Customer Web", "Platform", "Data"]),
+  itemComments: (id) => later(id % 2 ? [
+    { author: "QA Tester", date: "2026-10-14", text: "Retested on staging: the refund total is still wrong when two partial refunds are made on the same day. Moving back to To Do." },
+    { author: "Shaun Sheppard", date: "2026-10-12", text: "Fixed in pull request 801; ready for testing." },
+  ] : [], 400),
+  forgetItem: (id) => {
+    triage = { ...triage, records: triage.records.filter((r) => r.id !== id) };
+    triageHandlers.forEach((h) => h(triage));
+    return later(undefined);
+  },
+  setRecommendation: (id, ai) => {
+    triage = { ...triage, records: triage.records.map((r) => (r.id === id ? { ...r, recommendation: ai ? "ai" : "human", overridden: true } : r)) };
+    triageHandlers.forEach((h) => h(triage));
+    return later(undefined);
+  },
+  retryFailedFixes: () => {
+    let n = 0;
+    triage = { ...triage, fixProblem: null, records: triage.records.map((r) => (r.fix?.status === "failed" ? (n++, { ...r, fix: { ...r.fix, status: "queued", error: null } }) : r)) };
+    triageHandlers.forEach((h) => h(triage));
+    return later(n);
+  },
+  triageAgain: (id) => { triage = { ...triage, records: triage.records.map((r) => (r.id === id ? { ...r, status: "pending" } : r)) }; triageHandlers.forEach((h) => h(triage)); return later(undefined); },
+  triageChoices: () => later({ types: ["Bug", "Epic", "Feature", "Product Backlog Item", "Story Bug", "Task"], states: ["New", "Approved", "Committed", "Done", "Removed", "To Do", "In Progress"] }),
+  projectStructure: (project) => later({
+    areas: [project, `${project}\\Refunds`, `${project}\\Invoices`, `${project}\\Admin`],
+    repos: [{ name: "payments-api", defaultBranch: "main" }, { name: "web-portal", defaultBranch: "dev" }],
+  }),
+  onTriage: (h) => { triageHandlers.add(h); return () => triageHandlers.delete(h); },
   startFix: () => {
     const fix = sampleFix("generating");
     setFixes([fix, ...fixes]);
@@ -236,6 +372,7 @@ export const mockApi: Api = {
   listPeople: () => later(["Aisha Rahman", "Daniel Reyes", "Ellie Shaw", "Marcus Lee", "Priya Nair", "Tom Okafor"]),
   claudeStatus: () => later({ found: true, path: "/opt/homebrew/bin/claude", version: "2.1.291 (Claude Code)", signedIn: true, supported: !location.search.includes("oldcli"), gitFound: true }),
   importLegacy: () => later(null),
+  defaultTriagePrompt: () => later("You are triaging a work item assigned to a developer.\n\nHow to judge:\n- `risk`: `low` for a small, local change.\n- `ai_suitable`: true only if the problem is clear.\n- `confidence`: how sure you are."),
   defaultPrompt: () => later("You are an experienced engineer reviewing a pull request.\n\nReview guidance:\n- First, check the change against the acceptance criteria of the linked work items.\n- Then look for defects the change introduces.\n- Look specifically for security problems the change introduces."),
   open: (url) => { window.open(url, "_blank"); return later(undefined); },
   appVersion: () => later("0.4.0"),

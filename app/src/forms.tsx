@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { api, type AvailableUpdate } from "./api";
-import type { ClaudeStatus, Settings } from "./types";
+import type { AreaMapping, ClaudeStatus, ProjectConfig, ProjectStructure, Settings, TriageChoices } from "./types";
 import { Segmented, SwitchRow, TagInput } from "./ui";
 
 type Change = (patch: Partial<Settings>) => void;
@@ -157,34 +157,33 @@ export function useClaudeStatus(dependency: string): [ClaudeStatus | null, () =>
   return [status, check];
 }
 
-/** Editor for the review guidance, starting from the built-in text. */
-function PromptSetting({ settings, change }: { settings: Settings; change: Change }) {
+/** Editor for Claude's guidance, starting from the built-in text. Empty in settings means "use the built-in". */
+function PromptSetting({ value, onSave, loadDefault, help }: {
+  value: string; onSave: (value: string) => void; loadDefault: () => Promise<string>; help: ReactNode;
+}) {
   const [builtIn, setBuiltIn] = useState("");
   const [text, setText] = useState<string | null>(null);
   useEffect(() => {
-    api.defaultPrompt().then((value) => {
-      setBuiltIn(value);
-      setText((current) => current ?? (settings.reviewPrompt.trim() ? settings.reviewPrompt : value));
+    loadDefault().then((found) => {
+      setBuiltIn(found);
+      setText((current) => current ?? (value.trim() ? value : found));
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   if (text === null) return null;
-  const custom = settings.reviewPrompt.trim() !== "";
-  const dirty = text.trim() !== (custom ? settings.reviewPrompt.trim() : builtIn.trim());
+  const custom = value.trim() !== "";
+  const dirty = text.trim() !== (custom ? value.trim() : builtIn.trim());
   // Saving text identical to the built-in guidance keeps "default", so future improvements to it still apply.
-  const save = () => change({ reviewPrompt: text.trim() === builtIn.trim() ? "" : text.trim() });
+  const save = () => onSave(text.trim() === builtIn.trim() ? "" : text.trim());
   return (
     <div className="fields">
       <label className="field"><span>Instructions for Claude</span>
         <textarea className="input mono prompt" value={text} spellCheck={false} onChange={(e) => setText(e.target.value)} />
       </label>
-      <span className="help">
-        Warden always adds the pull request's details, its linked work items and acceptance criteria, the repo's REVIEW.md, and the answer format, so you only need to say what to look for.
-        Keep the Critical / Major / Minor wording: approval depends on those levels.
-      </span>
+      <span className="help">{help}</span>
       <div className="inline">
         <button className="btn primary" disabled={!dirty || !text.trim()} onClick={save}>Save prompt</button>
-        <button className="btn" disabled={!custom && !dirty} onClick={() => { setText(builtIn); change({ reviewPrompt: "" }); }}>Reset to default</button>
+        <button className="btn" disabled={!custom && !dirty} onClick={() => { setText(builtIn); onSave(""); }}>Reset to default</button>
         <span className="help" role="status">{dirty ? "Unsaved changes" : custom ? "Using your custom prompt" : "Using the built-in prompt"}</span>
       </div>
     </div>
@@ -256,73 +255,471 @@ function About({ offer, onCheck }: { offer: UpdateOffer; onCheck: () => Promise<
   );
 }
 
+/** "Project\\Area\\Sub" as "Project › Area › Sub". */
+const areaLabel = (path: string) => path.split("\\").join(" › ");
+
+/** Whether a mapping is complete, and whether its fix setup can run. */
+function mappingStatus(m: AreaMapping): { label: string; tone: "ok" | "major" } {
+  if (!m.areaPath || !m.repo || !m.branch) return { label: "Incomplete", tone: "major" };
+  const copies = m.copyLocalOnly || (m.copyPaths ?? []).length > 0;
+  if (copies && !(m.localPath ?? "").trim()) return { label: "Needs local copy", tone: "major" };
+  return { label: "Ready", tone: "ok" };
+}
+
+/** One area mapping: a summary row that opens into where it matches and how a fix gets ready. */
+function MappingCard({ m, open, onToggle, onChange, onRemove, structure }: {
+  m: AreaMapping; open: boolean; onToggle: () => void; onChange: (patch: Partial<AreaMapping>) => void; onRemove: () => void;
+  structure: ProjectStructure | "loading" | string | undefined;
+}) {
+  const [paths, setPaths] = useState((m.copyPaths ?? []).join("\n"));
+  const loaded = typeof structure === "object" ? structure : null;
+  const status = mappingStatus(m);
+  const extra = (m.copyPaths ?? []).length;
+  const summary = [
+    m.copyLocalOnly ? "Copies untracked files" : "No untracked files",
+    extra ? `${extra} extra file${extra === 1 ? "" : "s"}` : null,
+    (m.setupCommand ?? "").trim() ? "runs setup command" : "no setup command",
+  ].filter(Boolean).join(" · ");
+  const repo = m.repo || "the repository";
+
+  return (
+    <div className={`map-card ${open ? "open" : ""}`}>
+      <div className="map-head">
+        <button className="map-toggle" onClick={onToggle} aria-expanded={open}>
+          <span className={`chev ${open ? "open" : ""}`}>›</span>
+          <span className="stack" style={{ gap: 4, minWidth: 0 }}>
+            <span className="map-title">
+              <b>{m.areaPath ? areaLabel(m.areaPath) : "Choose an area"}</b>
+              <span className="tone-faint">→</span>
+              <b>{m.repo || "Choose a repository"}</b>
+              {m.branch && <span className="mono map-branch">{m.branch}</span>}
+            </span>
+            <span className="help">{summary}</span>
+          </span>
+        </button>
+        <span className={`tpill tpill-${status.tone}`}>{status.label}</span>
+        <button className="map-remove" aria-label="Remove area" title="Remove area" onClick={onRemove}>×</button>
+      </div>
+
+      {open && (
+        <>
+          <div className="map-section">
+            <span className="eyebrow">Match</span>
+            <div className="map-grid">
+              <label className="field"><span>Area path</span>
+                <select className="input" value={m.areaPath} disabled={!loaded} onChange={(e) => onChange({ areaPath: e.target.value })}>
+                  <option value="">{structure === "loading" ? "Loading…" : loaded ? "Choose an area" : "—"}</option>
+                  {loaded?.areas.map((a) => <option key={a} value={a}>{areaLabel(a)}</option>)}
+                </select>
+              </label>
+              <label className="field"><span>Repository</span>
+                <select className="input" value={m.repo} disabled={!loaded}
+                  onChange={(e) => onChange({ repo: e.target.value, branch: loaded?.repos.find((r) => r.name === e.target.value)?.defaultBranch || m.branch })}>
+                  <option value="">{loaded ? "Choose a repository" : "—"}</option>
+                  {loaded?.repos.map((r) => <option key={r.name} value={r.name}>{r.name}</option>)}
+                </select>
+              </label>
+              <label className="field"><span>Base branch</span>
+                <input className="input mono" value={m.branch} placeholder="dev" onChange={(e) => onChange({ branch: e.target.value.trim() })} />
+              </label>
+            </div>
+            <span className="help">Pull requests are opened against the base branch.</span>
+            {typeof structure === "string" && structure !== "loading" && <span className="help tone-critical">{structure}</span>}
+          </div>
+
+          <div className="map-section">
+            <div className="stack" style={{ gap: 4 }}>
+              <span className="eyebrow">Fix setup</span>
+              <span className="help">Each fix starts from a fresh copy of {repo}. These steps get it ready to build and test.</span>
+            </div>
+
+            <div className="map-step">
+              <span className="step-num">1</span>
+              <label className="field">
+                <span className="step-title">Your local copy of {repo}</span>
+                <input className="input mono" value={m.localPath ?? ""} placeholder={`~/projects/${m.repo || "repository"}`} onChange={(e) => onChange({ localPath: e.target.value })} />
+                <span className="help">Only read, never changed. Files are copied from here in step 2.</span>
+              </label>
+            </div>
+
+            <div className="map-step">
+              <span className="step-num">2</span>
+              <div className="fields" style={{ gap: 12 }}>
+                <span className="step-title">Files to bring across</span>
+                <div className="switch-tile" role="button" tabIndex={0}
+                  onClick={() => onChange({ copyLocalOnly: !m.copyLocalOnly })}
+                  onKeyDown={(e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); onChange({ copyLocalOnly: !m.copyLocalOnly }); } }}>
+                  <span className="stack" style={{ gap: 2 }}>
+                    <span style={{ fontWeight: 500 }}>All untracked files</span>
+                    <span className="help">.env, local settings and anything else git ignores. Skips node_modules, bin, obj, dist and .angular, which step 3 rebuilds.</span>
+                  </span>
+                  <span className={`switch ${m.copyLocalOnly ? "on" : ""}`} role="switch" aria-checked={!!m.copyLocalOnly} aria-label="All untracked files" />
+                </div>
+                <label className="field">
+                  <span>Also copy these tracked files <span className="tone-faint" style={{ fontWeight: 400 }}>· optional</span></span>
+                  <textarea className="input mono" rows={2} value={paths} spellCheck={false}
+                    placeholder={"Acme.PortalApi/appsettings.Development.json\nAcme.Portal/src/environments/environment.ts"}
+                    onChange={(e) => setPaths(e.target.value)}
+                    onBlur={() => onChange({ copyPaths: paths.split("\n").map((p) => p.trim()).filter(Boolean) })} />
+                  <span className="help">One path per line, relative to the repository. Your local version replaces the committed one for building and testing, and is never committed.</span>
+                </label>
+              </div>
+            </div>
+
+            <div className="map-step">
+              <span className="step-num">3</span>
+              <label className="field">
+                <span className="step-title">Setup command <span className="tone-faint" style={{ fontWeight: 400 }}>· optional</span></span>
+                <input className="input mono" value={m.setupCommand ?? ""} placeholder="dotnet restore && cd Acme.Portal && npm ci" onChange={(e) => onChange({ setupCommand: e.target.value })} />
+                <span className="help">Runs once before Claude starts. Leave blank and Claude restores packages itself. Nothing it installs or changes is committed.</span>
+              </label>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** A project's area paths and the repository each one's work belongs to. */
+function AreaMappings({ project, areas, onChange }: { project: string; areas: AreaMapping[]; onChange: (areas: AreaMapping[]) => void }) {
+  const [structure, setStructure] = useState<ProjectStructure | "loading" | string | undefined>(undefined);
+  const load = () => {
+    if (!project || structure) return;
+    setStructure("loading");
+    api.projectStructure(project).then(setStructure, (e) => setStructure(`Could not load areas and repositories: ${e}`));
+  };
+  // Open the ones that still need something; the rest stay as one-line summaries.
+  const [opened, setOpened] = useState<Set<number>>(() => new Set(areas.flatMap((m, i) => (mappingStatus(m).tone === "ok" ? [] : [i]))));
+  useEffect(() => {
+    if (opened.size > 0) load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opened.size, project]);
+  const set = (index: number, patch: Partial<AreaMapping>) => onChange(areas.map((m, i) => (i === index ? { ...m, ...patch } : m)));
+
+  return (
+    <div className="map-list">
+      {areas.map((m, i) => (
+        <MappingCard key={i} m={m} open={opened.has(i)} structure={structure}
+          onToggle={() => setOpened((o) => { const next = new Set(o); if (!next.delete(i)) next.add(i); return next; })}
+          onChange={(patch) => set(i, patch)}
+          onRemove={() => {
+            onChange(areas.filter((_, j) => j !== i));
+            setOpened((o) => new Set([...o].filter((j) => j !== i).map((j) => (j > i ? j - 1 : j))));
+          }} />
+      ))}
+      <div className="map-fallback">
+        <span />
+        <span className="map-title"><b>Any other area</b><span className="tone-faint">→</span><span>Left for a person</span></span>
+        <span className="help">Always</span>
+      </div>
+      <div>
+        <button className="btn add-area" onClick={() => {
+          onChange([...areas, { project, areaPath: "", repo: "", branch: "", localPath: "", copyPaths: [], copyLocalOnly: true, setupCommand: "" }]);
+          setOpened(new Set([areas.length]));
+        }}>+ Add area</button>
+      </div>
+    </div>
+  );
+}
+
+const MERGE_OPTIONS = [{ value: "squash", label: "Squash" }, { value: "noFastForward", label: "Merge" }, { value: "rebase", label: "Rebase" }];
+
+/** Voting and auto-complete for one project, behind an explicit confirmation. */
+function ProjectApprove({ on, onChange }: { on: boolean; onChange: (on: boolean) => void }) {
+  const [confirming, setConfirming] = useState(false);
+  return (
+    <>
+      <SwitchRow title="Vote, and auto-complete clean PRs" on={on}
+        onChange={(next) => (next ? setConfirming(true) : (setConfirming(false), onChange(false)))}
+        help="No critical or major issues: approve and set auto-complete. Otherwise: vote Waiting for author, and review again when new commits are pushed." />
+      {confirming && !on && (
+        <div className="warning tint-major" role="alertdialog" aria-label="Confirm voting">
+          <span><b className="tone-major">Votes are cast as you.</b> Approvals are recorded under your name on the strength of an AI review alone, and auto-complete merges the pull request once its policies pass, without a person reading the code.</span>
+          <div className="inline">
+            <button className="btn primary" onClick={() => { onChange(true); setConfirming(false); }}>Turn on</button>
+            <button className="btn ghost" onClick={() => setConfirming(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+/** A short summary of what Warden does for a project. */
+function projectSummary(c: ProjectConfig) {
+  const review = c.review ? `Reviews ${c.people.length ? `PRs by ${c.people.length} ${c.people.length === 1 ? "person" : "people"}` : "every PR"}${c.approveAndComplete ? ", votes and completes" : ""}` : "PR review off";
+  const triage = c.triage ? `triages${c.autoFix ? " and fixes automatically" : ""}, ${c.areas.length} area${c.areas.length === 1 ? "" : "s"}` : "triage off";
+  return `${review} · ${triage}`;
+}
+
+/** Everything for one project in one place: its pull request reviews, its board triage and its areas. */
+function ProjectCard({ config: c, organization, open, onToggle, onChange, onRemove }: {
+  config: ProjectConfig; organization: string; open: boolean; onToggle: () => void;
+  onChange: (patch: Partial<ProjectConfig>) => void; onRemove: () => void;
+}) {
+  const [people, setPeople] = useState<string[]>([]);
+  const [choices, setChoices] = useState<TriageChoices | null>(null);
+  const [removing, setRemoving] = useState(false);
+  useEffect(() => {
+    if (!open || !organization) return;
+    let live = true;
+    api.listPeople(organization, [c.name]).then((p) => live && setPeople(p), () => {});
+    api.triageChoices([c.name]).then((found) => live && setChoices(found), () => {});
+    return () => { live = false; };
+  }, [open, organization, c.name]);
+  const incomplete = c.triage && c.areas.some((m) => mappingStatus(m).tone !== "ok");
+
+  return (
+    <div className={`project-card ${open ? "open" : ""}`}>
+      <div className="map-head">
+        <button className="map-toggle" onClick={onToggle} aria-expanded={open}>
+          <span className={`chev ${open ? "open" : ""}`}>›</span>
+          <span className="stack" style={{ gap: 4, minWidth: 0 }}>
+            <span className="map-title"><b style={{ fontSize: 15 }}>{c.name}</b></span>
+            <span className="help">{projectSummary(c)}</span>
+          </span>
+        </button>
+        <span className="pills">
+          {c.review && <span className="tpill tpill-purple">PR review</span>}
+          {c.triage && <span className={`tpill ${incomplete ? "tpill-major" : "tpill-ok"}`}>{incomplete ? "Triage · finish setup" : "Triage"}</span>}
+          {!c.review && !c.triage && <span className="tpill tpill-neutral">Off</span>}
+        </span>
+        <button className="map-remove" aria-label={`Remove ${c.name}`} title="Remove project" onClick={() => setRemoving(true)}>×</button>
+      </div>
+      {removing && (
+        <div className="map-section">
+          <div className="warning tint-major" role="alertdialog">
+            <span>Remove <b>{c.name}</b>? Its pull requests stop being reviewed, its board stops being triaged, and its areas are forgotten.</span>
+            <div className="inline">
+              <button className="btn primary" onClick={onRemove}>Remove project</button>
+              <button className="btn ghost" onClick={() => setRemoving(false)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {open && (
+        <>
+          <div className="map-section">
+            <span className="eyebrow">Pull request review</span>
+            <SwitchRow title="Review pull requests" on={c.review} onChange={(review) => onChange({ review })}
+              help="Claude reviews each new pull request in this project and posts what it finds." />
+            {c.review && (
+              <>
+                <div className="field"><span>Only review PRs raised by</span>
+                  <TagInput id={`people-${c.name}`} values={c.people} onChange={(p) => onChange({ people: p })} placeholder="Add person, press Enter" suggestions={people} people />
+                  <span className="help">{c.people.length ? "Others' pull requests are ignored." : "Empty: pull requests from everyone are reviewed."} Names must match Azure DevOps exactly.</span>
+                </div>
+                <ProjectApprove on={c.approveAndComplete} onChange={(approveAndComplete) => onChange({ approveAndComplete })} />
+                <div className={`switch-row ${c.approveAndComplete ? "" : "dimmed"}`}><span className="label">Merge type</span>
+                  <Segmented label="Merge type" value={c.mergeStrategy} onChange={(mergeStrategy) => onChange({ mergeStrategy })} options={MERGE_OPTIONS} />
+                </div>
+                <SwitchRow className={c.approveAndComplete ? "" : "dimmed"} title="Delete source branch after merge" on={c.deleteSourceBranch} onChange={(deleteSourceBranch) => onChange({ deleteSourceBranch })} />
+              </>
+            )}
+          </div>
+
+          <div className="map-section">
+            <span className="eyebrow">Board triage</span>
+            <SwitchRow title="Triage my work items" on={c.triage} onChange={(triage) => onChange({ triage })}
+              help="Each check, Warden reads the work items assigned to you here in a to-do state and rates their risk and whether an AI agent could fix them." />
+            {c.triage && (
+              <>
+                <SwitchRow title="Fix automatically" on={c.autoFix} onChange={(autoFix) => onChange({ autoFix })}
+                  help="Fix items triage marks as safe for an AI agent without asking. Claude fixes, adds tests and runs the build and tests; only if they pass does Warden push and open a pull request. Off: use “Fix with Claude” on the Triage page." />
+                <SwitchRow title="Current sprint only" on={c.currentSprint} onChange={(currentSprint) => onChange({ currentSprint })}
+                  help="Only items in the project's current sprint. Items in later sprints or the backlog wait until their sprint starts." />
+                <SwitchRow title="Tag and comment on items" on={c.postResults} onChange={(postResults) => onChange({ postResults })}
+                  help="Tag each triaged item warden-ai-fixable or warden-needs-human, and comment on the ones for a person, mentioning you. Off keeps triage results in Warden." />
+                <div className="map-grid">
+                  <div className="field"><span>States that count as “to do”</span>
+                    <TagInput id={`states-${c.name}`} values={c.states} onChange={(states) => onChange({ states })} placeholder="Add state, press Enter"
+                      suggestions={choices?.states ?? ["To Do", "New", "Proposed", "Approved", "Committed", "Active"]} />
+                  </div>
+                  <div className="field"><span>Work item types</span>
+                    <TagInput id={`types-${c.name}`} values={c.types} onChange={(types) => onChange({ types })} placeholder="Add type, press Enter"
+                      suggestions={choices?.types ?? ["Bug", "Product Backlog Item", "User Story", "Task", "Issue"]} />
+                  </div>
+                </div>
+                <div className="stack" style={{ gap: 4, marginTop: 6 }}>
+                  <b>Area paths and repositories</b>
+                  <span className="help">Which repository Claude fixes each board area in. An area includes everything below it, and the most specific match wins.</span>
+                </div>
+                <AreaMappings project={c.name} areas={c.areas} onChange={(areas) => onChange({ areas })} />
+              </>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Every project Warden works with, each configured on its own. */
+function ProjectsSettings({ settings, change }: { settings: Settings; change: Change }) {
+  const configs = settings.projectConfigs ?? [];
+  const [available, setAvailable] = useState<string[]>([]);
+  const [adding, setAdding] = useState("");
+  const [opened, setOpened] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    if (settings.organization) api.listProjects().then(setAvailable, () => setAvailable([]));
+  }, [settings.organization]);
+  const set = (name: string, patch: Partial<ProjectConfig>) =>
+    change({ projectConfigs: configs.map((c) => (c.name === name ? { ...c, ...patch } : c)) });
+  const choices = available.filter((p) => !configs.some((c) => c.name.toLowerCase() === p.toLowerCase()));
+  const add = (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed || configs.some((c) => c.name.toLowerCase() === trimmed.toLowerCase())) return;
+    const exact = available.find((p) => p.toLowerCase() === trimmed.toLowerCase()) ?? trimmed;
+    change({
+      projectConfigs: [...configs, {
+        name: exact, review: true, people: [], approveAndComplete: false, mergeStrategy: "noFastForward", deleteSourceBranch: false,
+        triage: false, autoFix: false, currentSprint: true, postResults: false, states: ["To Do", "New"], types: ["Bug"], areas: [],
+      }],
+    });
+    setOpened(new Set([exact]));
+    setAdding("");
+  };
+
+  return (
+    <div className="map-list">
+      {configs.length === 0 && <div className="note-box"><b>No projects yet</b><p>Add a project to review its pull requests or triage its board.</p></div>}
+      {configs.map((c) => (
+        <ProjectCard key={c.name} config={c} organization={settings.organization} open={opened.has(c.name)}
+          onToggle={() => setOpened((o) => { const next = new Set(o); if (!next.delete(c.name)) next.add(c.name); return next; })}
+          onChange={(patch) => set(c.name, patch)}
+          onRemove={() => change({ projectConfigs: configs.filter((x) => x.name !== c.name) })} />
+      ))}
+      <div className="inline add-project">
+        <input className="input" list="project-options" value={adding} placeholder="Project name" aria-label="Project to add"
+          onChange={(e) => setAdding(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add(adding); }} />
+        <datalist id="project-options">{choices.map((p) => <option key={p} value={p} />)}</datalist>
+        <button className="btn add-area" disabled={!adding.trim()} onClick={() => add(adding)}>+ Add project</button>
+      </div>
+      <div className="note-box">
+        <b>How fixes are checked</b>
+        <p>Claude finds and runs each repository's build and tests. Only build and test commands such as dotnet test and npm test are allowed, and nothing is pushed unless they pass. The setup command and tests run on this computer, as you.</p>
+      </div>
+    </div>
+  );
+}
+
+type SettingsTab = "general" | "review" | "triage" | "projects";
+const SETTINGS_TABS: { key: SettingsTab; label: string }[] = [
+  { key: "general", label: "General" }, { key: "review", label: "PR review" }, { key: "triage", label: "Triage" }, { key: "projects", label: "Projects" },
+];
+
 export function SettingsView({ settings, change, onRunSetup, offer, onCheck }: {
   settings: Settings; change: Change; onRunSetup: () => void; offer: UpdateOffer; onCheck: () => Promise<AvailableUpdate | null>;
 }) {
-  const [projectChoices, setProjectChoices] = useState<string[]>([]);
   const [claude, recheck] = useClaudeStatus(settings.cliPath);
+  const [tab, setTabState] = useState<SettingsTab>(() => {
+    try { return (localStorage.getItem("warden.settings.tab") as SettingsTab) || "general"; } catch { return "general"; }
+  });
+  const setTab = (t: SettingsTab) => { setTabState(t); try { localStorage.setItem("warden.settings.tab", t); } catch { /* not kept */ } };
+
   return (
     <div className="settings">
-      <section className="setting-group">
-        <div><h2>Azure DevOps</h2><span className="help">Where Warden looks for pull requests.</span></div>
-        <Connect settings={settings} change={change} onConnected={(_, projects) => setProjectChoices(projects)} />
-      </section>
+      <div className="seg settings-tabs" role="tablist" aria-label="Settings sections">
+        {SETTINGS_TABS.map((t) => (
+          <button key={t.key} role="tab" aria-selected={tab === t.key} className={tab === t.key ? "on" : ""} onClick={() => setTab(t.key)}>{t.label}</button>
+        ))}
+      </div>
 
-      <section className="setting-group">
-        <div><h2>Scope</h2><span className="help">Leave either list empty to include everything.</span></div>
-        <Scope settings={settings} change={change} projectChoices={projectChoices} />
-      </section>
+      {tab === "general" && (
+        <>
+          <section className="setting-group">
+            <div><h2>Azure DevOps</h2><span className="help">Your organisation and the token Warden uses.</span></div>
+            <Connect settings={settings} change={change} />
+          </section>
+          <section className="setting-group">
+            <div><h2>Checking</h2><span className="help">How often Warden looks for new pull requests and board items, and how it tells you about them.</span></div>
+            <div className="fields">
+              <div className="switch-row"><span className="label">Check every</span>
+                <Segmented label="Check interval" value={settings.pollSeconds} onChange={(pollSeconds) => change({ pollSeconds })}
+                  options={[{ value: 30, label: "30s" }, { value: 60, label: "1m" }, { value: 300, label: "5m" }, { value: 900, label: "15m" }]} />
+              </div>
+              <SwitchRow title="Notifications" on={settings.notifications} onChange={(notifications) => change({ notifications })}
+                help="Show a system notification when a review starts and finishes, when fixes finish or pull requests are approved, and when an update is available." />
+            </div>
+          </section>
+          <section className="setting-group">
+            <div><h2>Claude Code</h2><span className="help">The CLI that runs reviews, triage and fixes.</span></div>
+            <div className="fields">
+              <label className="field"><span>CLI path</span>
+                <input className="input mono" defaultValue={settings.cliPath} placeholder="Found automatically" spellCheck={false}
+                  onBlur={(e) => e.target.value.trim() !== settings.cliPath && change({ cliPath: e.target.value.trim() })} />
+              </label>
+              <ClaudeCheck status={claude} onRecheck={recheck} />
+            </div>
+          </section>
+          <section className="setting-group">
+            <div><h2>Appearance</h2></div>
+            <div className="fields" style={{ alignItems: "flex-start" }}>
+              <Segmented label="Theme" value={settings.theme} onChange={(theme) => change({ theme })}
+                options={[{ value: "system", label: "System" }, { value: "light", label: "Light" }, { value: "dark", label: "Dark" }]} />
+              <button className="link" style={{ fontSize: 12 }} onClick={onRunSetup}>Run first-time setup again</button>
+            </div>
+          </section>
+          <section className="setting-group">
+            <div><h2>About</h2><span className="help">Version and updates.</span></div>
+            <About offer={offer} onCheck={onCheck} />
+          </section>
+        </>
+      )}
 
-      <section className="setting-group">
-        <div><h2>Review behaviour</h2><span className="help">What happens after Claude decides.</span></div>
-        <div className="fields">
-          <div className="switch-row"><span className="label">Check for new PRs every</span>
-            <Segmented label="Check interval" value={settings.pollSeconds} onChange={(pollSeconds) => change({ pollSeconds })}
-              options={[{ value: 30, label: "30s" }, { value: 60, label: "1m" }, { value: 300, label: "5m" }, { value: 900, label: "15m" }]} />
-          </div>
-          <SwitchRow title="Dry run" on={settings.dryRun} onChange={(dryRun) => change({ dryRun })}
-            help="Review pull requests but never post, vote or complete. Use it to see what Warden would do." />
-          <SwitchRow title="Notifications" on={settings.notifications} onChange={(notifications) => change({ notifications })}
-            help="Show a system notification when a new pull request starts being reviewed, when the review finishes, and when an update is available." />
-          <SwitchRow title="Tag the author in the comment" on={settings.mentionAuthor} onChange={(mentionAuthor) => change({ mentionAuthor })} />
-          <ApproveSetting settings={settings} change={change} />
-          <div className={`switch-row ${settings.approveAndComplete ? "" : "dimmed"}`}><span className="label">Merge type</span>
-            <Segmented label="Merge type" value={settings.mergeStrategy} onChange={(mergeStrategy) => change({ mergeStrategy })}
-              options={[{ value: "squash", label: "Squash" }, { value: "noFastForward", label: "Merge" }, { value: "rebase", label: "Rebase" }]} />
-          </div>
-          <SwitchRow className={settings.approveAndComplete ? "" : "dimmed"} title="Delete source branch after merge" on={settings.deleteSourceBranch} onChange={(deleteSourceBranch) => change({ deleteSourceBranch })} />
-        </div>
-      </section>
+      {tab === "review" && (
+        <>
+          <section className="setting-group">
+            <div><h2>Pull request review</h2><span className="help">For every project. Which projects are reviewed, whose pull requests, and whether Warden votes are set per project under Projects.</span></div>
+            <div className="fields">
+              <SwitchRow title="Dry run" on={settings.dryRun} onChange={(dryRun) => change({ dryRun })}
+                help="Review pull requests but never post, vote or complete. Use it to see what Warden would do." />
+              <SwitchRow title="Tag the author in the comment" on={settings.mentionAuthor} onChange={(mentionAuthor) => change({ mentionAuthor })} />
+              <SwitchRow title="Also review pull requests that were already open" on={settings.reviewExisting} onChange={(reviewExisting) => change({ reviewExisting })}
+                help="Off: only pull requests opened after monitoring started are reviewed." />
+            </div>
+          </section>
+          <section className="setting-group">
+            <div><h2>Review prompt</h2><span className="help">What Claude is asked to check in each pull request.</span></div>
+            <PromptSetting value={settings.reviewPrompt} onSave={(reviewPrompt) => change({ reviewPrompt })} loadDefault={api.defaultPrompt}
+              help={<>Warden always adds the pull request's details, its linked work items and acceptance criteria, the repo's REVIEW.md, and the answer format, so you only need to say what to look for.
+                Keep the Critical / Major / Minor wording: approval depends on those levels.</>} />
+          </section>
+        </>
+      )}
 
-      <section className="setting-group">
-        <div><h2>Review prompt</h2><span className="help">What Claude is asked to check in each pull request.</span></div>
-        <PromptSetting settings={settings} change={change} />
-      </section>
+      {tab === "triage" && (
+        <>
+          <section className="setting-group">
+            <div><h2>Board triage</h2><span className="help">For every project. Which projects are triaged, which items count and where their code lives are set per project under Projects.</span></div>
+            <div className="fields">
+              <div className="switch-row"><span className="label">Fixes at a time</span>
+                <Segmented label="Fixes at a time" value={settings.triageMaxFixes ?? 1} onChange={(triageMaxFixes) => change({ triageMaxFixes })}
+                  options={[1, 2, 3, 4, 5].map((n) => ({ value: n, label: String(n) }))} />
+              </div>
+              <span className="help" style={{ marginTop: -8 }}>Across all projects. Each fix builds and tests its own copy of the repository, so more at once uses more of this computer, and test suites that share a database or port can get in each other's way.</span>
+              <SwitchRow title="Triage dry run" on={settings.triageDryRun} onChange={(triageDryRun) => change({ triageDryRun })}
+                help="Nothing goes to Azure DevOps: items are not tagged or commented on, and fixes are tested but never committed, pushed or opened as pull requests. Separate from the pull request dry run." />
+              <span className="help">Needs your token to have Work Items (Read &amp; Write). Pause triage and fixing from the top of the Triage page.</span>
+            </div>
+          </section>
+          <section className="setting-group">
+            <div><h2>Triage prompt</h2><span className="help">How Claude rates each work item.</span></div>
+            <PromptSetting value={settings.triagePrompt} onSave={(triagePrompt) => change({ triagePrompt })} loadDefault={api.defaultTriagePrompt}
+              help={<>Warden always adds the work item's details, the mapped repository, and the answer format, so you only need to say how to rate risk and suitability.
+                An item is only marked AI-fixable when Claude rates it low risk, suitable and high confidence.</>} />
+          </section>
+        </>
+      )}
 
-      <section className="setting-group">
-        <div><h2>Claude Code</h2><span className="help">The CLI that runs each review.</span></div>
-        <div className="fields">
-          <label className="field"><span>CLI path</span>
-            <input className="input mono" defaultValue={settings.cliPath} placeholder="Found automatically" spellCheck={false}
-              onBlur={(e) => e.target.value.trim() !== settings.cliPath && change({ cliPath: e.target.value.trim() })} />
-          </label>
-          <ClaudeCheck status={claude} onRecheck={recheck} />
-        </div>
-      </section>
-
-      <section className="setting-group">
-        <div><h2>About</h2><span className="help">Version and updates.</span></div>
-        <About offer={offer} onCheck={onCheck} />
-      </section>
-
-      <section className="setting-group">
-        <div><h2>Appearance</h2></div>
-        <div className="fields" style={{ alignItems: "flex-start" }}>
-          <Segmented label="Theme" value={settings.theme} onChange={(theme) => change({ theme })}
-            options={[{ value: "system", label: "System" }, { value: "light", label: "Light" }, { value: "dark", label: "Dark" }]} />
-          <button className="link" style={{ fontSize: 12 }} onClick={onRunSetup}>Run first-time setup again</button>
-        </div>
-      </section>
+      {tab === "projects" && (
+        <section className="setting-group">
+          <div><h2>Projects</h2><span className="help">Each project is set up on its own: whether its pull requests are reviewed and how, and whether its board is triaged and where its code lives.</span></div>
+          <div className="bare"><ProjectsSettings settings={settings} change={change} /></div>
+        </section>
+      )}
     </div>
   );
 }

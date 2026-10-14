@@ -6,7 +6,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { mockApi } from "./mock";
-import type { ClaudeStatus, Connection, Fix, HistoryRecord, Legacy, Live, Settings } from "./types";
+import type { ClaudeStatus, Connection, Fix, HistoryRecord, Legacy, Live, ProjectStructure, TriageChoices, Settings, TriageState } from "./types";
 
 export interface Api {
   getSettings(): Promise<Settings>;
@@ -17,6 +17,19 @@ export interface Api {
   retryReview(prId: number): Promise<void>;
   applyVote(recordId: string): Promise<void>;
   getFixes(): Promise<Fix[]>;
+  getTriage(): Promise<TriageState>;
+  triageAgain(id: number): Promise<void>;
+  fixWorkItem(id: number, notes?: string): Promise<void>;
+  addressPrFeedback(id: number): Promise<void>;
+  retryFailedFixes(): Promise<number>;
+  setRecommendation(id: number, ai: boolean): Promise<void>;
+  forgetItem(id: number): Promise<void>;
+  listProjects(): Promise<string[]>;
+  itemComments(id: number): Promise<{ author: string; date: string; text: string }[]>;
+  /** Area paths and repositories in a project, for mapping one to the other. */
+  projectStructure(project: string): Promise<ProjectStructure>;
+  triageChoices(projects: string[]): Promise<TriageChoices>;
+  onTriage(handler: (triage: TriageState) => void): () => void;
   /** Has Claude prepare a fix for the chosen issues (by position in the review). Pushes nothing. */
   startFix(recordId: string, issues: number[]): Promise<string>;
   /** Commits and pushes a fix the user has approved. */
@@ -29,6 +42,7 @@ export interface Api {
   claudeStatus(): Promise<ClaudeStatus>;
   importLegacy(): Promise<Legacy | null>;
   defaultPrompt(): Promise<string>;
+  defaultTriagePrompt(): Promise<string>;
   open(url: string): Promise<void>;
   appVersion(): Promise<string>;
   /** Shows a system notification. */
@@ -70,6 +84,18 @@ const tauriApi: Api = {
   retryReview: (prId) => invoke("retry_review", { prId }),
   applyVote: (recordId) => invoke("apply_vote", { recordId }),
   getFixes: () => invoke("get_fixes"),
+  getTriage: () => invoke("get_triage"),
+  triageAgain: (id) => invoke("triage_again", { id }),
+  fixWorkItem: (id, notes) => invoke("fix_work_item", { id, notes: notes ?? null }),
+  addressPrFeedback: (id) => invoke("address_pr_feedback", { id }),
+  retryFailedFixes: () => invoke("retry_failed_fixes"),
+  setRecommendation: (id, ai) => invoke("set_recommendation", { id, ai }),
+  forgetItem: (id) => invoke("forget_item", { id }),
+  listProjects: () => invoke("list_projects"),
+  itemComments: (id) => invoke("item_comments", { id }),
+  projectStructure: (project) => invoke("project_structure", { project }),
+  triageChoices: (projects) => invoke("triage_choices", { projects }),
+  onTriage: (handler) => subscribe("triage", handler),
   startFix: (recordId, issues) => invoke("start_fix", { recordId, issues }),
   pushFix: (fixId) => invoke("push_fix", { fixId }),
   discardFix: (fixId) => invoke("discard_fix", { fixId }),
@@ -80,6 +106,7 @@ const tauriApi: Api = {
   claudeStatus: () => invoke("claude_status"),
   importLegacy: () => invoke("import_legacy"),
   defaultPrompt: () => invoke("default_prompt"),
+  defaultTriagePrompt: () => invoke("default_triage_prompt"),
   open: (url) => openUrl(url),
   appVersion: () => getVersion(),
   notify: (title, body) => sendNotification({ title, body }),

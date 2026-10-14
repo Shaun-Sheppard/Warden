@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use serde::{de::DeserializeOwned, Serialize};
 use std::path::PathBuf;
 
-use crate::model::{Fix, Record, Settings, Tracking};
+use crate::model::{Fix, Record, Settings, Tracking, TriageState};
 
 /// JSON files in the app's data directory.
 pub struct Store {
@@ -38,7 +38,9 @@ impl Store {
     }
 
     pub fn settings(&self) -> Settings {
-        self.read("settings.json")
+        let mut settings: Settings = self.read("settings.json");
+        settings.normalise();
+        settings
     }
 
     pub fn save_settings(&self, settings: &Settings) -> Result<()> {
@@ -59,6 +61,14 @@ impl Store {
 
     pub fn save_fixes(&self, fixes: &[Fix]) -> Result<()> {
         self.write("fixes.json", &fixes)
+    }
+
+    pub fn triage(&self) -> TriageState {
+        self.read("triage.json")
+    }
+
+    pub fn save_triage(&self, triage: &TriageState) -> Result<()> {
+        self.write("triage.json", triage)
     }
 
     pub fn tracking(&self) -> Tracking {

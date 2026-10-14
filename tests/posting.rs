@@ -543,3 +543,78 @@ async fn approving_reviews_post_a_closed_thread() {
     assert_eq!(bodies[0]["status"], "closed");
     assert_eq!(bodies[1]["status"], "active");
 }
+
+#[tokio::test]
+async fn board_items_are_found_read_tagged_and_commented() {
+    use wiremock::matchers::body_json;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/org/proj/_apis/wit/wiql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "workItems": [{ "id": 11 }, { "id": 12 }] })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/org/_apis/wit/workitems"))
+        .and(query_param("ids", "11,12"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "value": [
+            { "id": 11, "fields": { "System.Title": "Crash", "System.State": "To Do", "System.AreaPath": "proj\\Web", "System.WorkItemType": "Bug", "System.Rev": 3 } },
+            { "id": 12, "fields": { "System.Title": "Typo", "System.State": "To Do", "System.AreaPath": "proj", "System.WorkItemType": "Bug", "System.Tags": "ui" } }
+        ] })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/org/proj/_apis/wit/classificationnodes/Areas"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "name": "proj", "children": [ { "name": "Web", "children": [ { "name": "Admin" } ] }, { "name": "Api" } ]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/org/proj/_apis/git/repositories"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "value": [
+            { "id": "r2", "name": "web", "defaultBranch": "refs/heads/dev" }, { "id": "r1", "name": "Api" }
+        ] })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/org/proj/_apis/wit/workItems/12/comments"))
+        .and(query_param("api-version", "7.1-preview.4"))
+        .and(body_json(json!({ "text": "<b>hi</b>" })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": 1 })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/org/proj/_apis/wit/workitems/12"))
+        .and(header("content-type", "application/json-patch+json"))
+        .and(body_json(json!([{ "op": "add", "path": "/fields/System.Tags", "value": "ui; warden-needs-human" }])))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": 12 })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/org/proj/_apis/work/teamsettings/iterations"))
+        .and(query_param("$timeframe", "current"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "value": [
+            { "name": "Sprint 7", "path": "proj\\Sprint 7", "attributes": { "timeFrame": "current" } }
+        ] })))
+        .mount(&server)
+        .await;
+
+    let c = client(&server);
+    assert_eq!(c.current_iteration_path().await.unwrap().as_deref(), Some("proj\\Sprint 7"));
+    let ids = c.my_work_item_ids(&["To Do".into()], &["Bug".into()], None).await.unwrap();
+    assert_eq!(ids, [11, 12]);
+    let items = c.board_items(&ids).await.unwrap();
+    assert_eq!((items[0].title.as_str(), items[0].area_path.as_str(), items[0].rev), ("Crash", "proj\\Web", 3));
+    assert_eq!(items[1].tags, ["ui"]);
+    assert_eq!(c.area_paths().await.unwrap(), ["proj", "proj\\Web", "proj\\Web\\Admin", "proj\\Api"]);
+    let repos = c.repositories().await.unwrap();
+    assert_eq!(repos.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["Api", "web"]);
+    assert_eq!(repos[1].default_branch.as_deref(), Some("refs/heads/dev"));
+    c.add_work_item_comment(12, "<b>hi</b>").await.unwrap();
+    c.set_work_item_tags(12, &["ui".into(), "warden-needs-human".into()]).await.unwrap();
+    assert!(c.work_item_web_url(12).ends_with("/org/proj/_workitems/edit/12"));
+}

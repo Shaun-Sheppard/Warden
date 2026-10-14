@@ -40,7 +40,158 @@ export interface Settings {
   theme: "system" | "light" | "dark";
   mentionAuthor: boolean;
   reviewPrompt: string;
+  triagePrompt: string;
+  projectConfigs: ProjectConfig[];
+  /** Only items in each project's current sprint. */
+  triageCurrentSprint?: boolean;
+  triageDryRun: boolean;
+  triageAutoFix: boolean;
+  /** Triage and fixing start nothing new until resumed. */
+  triagePaused?: boolean;
+  triageMaxFixes: number;
+  triagePostResults: boolean;
   notifications: boolean;
+  triageEnabled: boolean;
+  triageProjects: string[];
+  triageStates: string[];
+  triageTypes: string[];
+  areaMappings: AreaMapping[];
+}
+
+/** Everything configured for one project: its pull request reviews, and its board triage. */
+export interface ProjectConfig {
+  name: string;
+  review: boolean;
+  people: string[];
+  approveAndComplete: boolean;
+  mergeStrategy: string;
+  deleteSourceBranch: boolean;
+  triage: boolean;
+  autoFix: boolean;
+  currentSprint: boolean;
+  postResults: boolean;
+  states: string[];
+  types: string[];
+  areas: AreaMapping[];
+}
+
+export interface AreaMapping {
+  project: string;
+  areaPath: string;
+  repo: string;
+  branch: string;
+  /** The user's own checkout, to copy local-only files from. */
+  localPath: string;
+  copyPaths: string[];
+  copyLocalOnly: boolean;
+  /** Runs once in each fix's worktree before Claude starts. */
+  setupCommand: string;
+}
+
+export interface TriageRecord {
+  id: number;
+  project: string;
+  kind: string;
+  title: string;
+  state: string;
+  areaPath: string;
+  priority: number | null;
+  url: string;
+  status: "pending" | "triaging" | "done" | "failed" | "left";
+  risk: "low" | "medium" | "high" | null;
+  aiSuitable: boolean | null;
+  confidence: "low" | "medium" | "high" | null;
+  recommendation: "ai" | "human" | null;
+  summary: string;
+  reason: string;
+  approach: string;
+  files: string[];
+  repo: string | null;
+  branch: string | null;
+  manipulation: string | null;
+  tagged: boolean;
+  commented: boolean;
+  error: string | null;
+  attempts: number;
+  triagedAt: string | null;
+  durationSecs: number;
+  fix: ItemFix | null;
+  /** For an item that needs a person: a few words on why. */
+  tag?: string;
+  /** The user moved the item to another group than triage chose. */
+  overridden?: boolean;
+  /** Earlier fixes, newest last, for an item that came back to the board. */
+  history?: ItemFix[];
+  /** The item this one sits under, such as the PBI a "Dev" task belongs to. */
+  parent?: { id: number; kind: string; title: string } | null;
+  /** Moved to the board's in-progress state by hand (not by Warden): that state. */
+  elsewhere?: string | null;
+  elsewhereSince?: string | null;
+}
+
+export type ItemFixStatus = "queued" | "fixing" | "testing" | "pushing" | "done" | "dryRun" | "failed";
+
+export interface TestRun {
+  command: string;
+  passed: boolean;
+  output: string;
+  durationSecs: number;
+}
+
+export interface ItemFix {
+  status: ItemFixStatus;
+  automatic: boolean;
+  /** The queued or running work addresses comments on the pull request. */
+  feedback: boolean;
+  /** What the user told Claude when starting the fix. */
+  notes?: string;
+  feedbackRounds: { at: string; threads: number; report: string; commit: string | null }[];
+  branch: string;
+  target: string;
+  repo: string;
+  baseCommit: string | null;
+  commit: string | null;
+  prId: number | null;
+  prUrl: string | null;
+  movedTo: string | null;
+  /** Where the pull request's review stands. */
+  review?: "open" | "approved" | "rejected" | "waiting" | "completed" | "abandoned" | null;
+  reviewCheckedAt?: string | null;
+  /** When the review status last changed: when the item entered its column. */
+  reviewChangedAt?: string | null;
+  /** The state the item was moved to once the pull request was approved. */
+  movedToReview?: string | null;
+  report: string;
+  files: { path: string; additions: number; deletions: number }[];
+  diff: string;
+  diffTruncated: boolean;
+  tests: TestRun | null;
+  rounds: number;
+  error: string | null;
+  warning: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+  lines: LogLine[];
+}
+
+export interface TriageState {
+  /** Fixing is paused: a fix failed on a settings or setup problem every fix would hit. */
+  fixProblem?: string | null;
+  records: TriageRecord[];
+  current: number | null;
+  lines: LogLine[];
+  lastCheck: string | null;
+  error: string | null;
+}
+
+export interface TriageChoices {
+  types: string[];
+  states: string[];
+}
+
+export interface ProjectStructure {
+  areas: string[];
+  repos: { name: string; defaultBranch: string }[];
 }
 
 export interface PrInfo {
@@ -115,6 +266,9 @@ export interface Current {
 }
 
 export interface Live {
+  /** When the next check is due, and when the wait for it began. */
+  nextCheck?: string | null;
+  waitStarted?: string | null;
   status: "setup" | "paused" | "reviewing" | "error" | "idle";
   checking: boolean;
   lastCheck: string | null;

@@ -15,15 +15,42 @@ pub struct Tools {
     pub tools: &'static str,
     /// Let file edits inside the working directory go ahead without asking.
     pub accept_edits: bool,
+    /// Shell commands the run may use (each with any arguments). Empty means no shell.
+    pub commands: &'static [&'static str],
 }
 
 /// Reviews only read. There is deliberately no shell access: even
 /// "read-only" git commands can write files (`--output`) or read ones
 /// outside the repository (`--no-index`).
-pub const REVIEW_TOOLS: Tools = Tools { tools: "Read,Grep,Glob", accept_edits: false };
+pub const REVIEW_TOOLS: Tools = Tools { tools: "Read,Grep,Glob", accept_edits: false, commands: &[] };
 /// Fixing issues also edits files, confined to the directory it runs in.
 /// It cannot commit, push or run commands.
-pub const FIX_TOOLS: Tools = Tools { tools: "Read,Grep,Glob,Edit,Write", accept_edits: true };
+pub const FIX_TOOLS: Tools = Tools { tools: "Read,Grep,Glob,Edit,Write", accept_edits: true, commands: &[] };
+
+/// The only commands a work-item fix may run: restoring, building and testing.
+/// Each may take arguments, and may follow a `cd` into a folder.
+pub const BUILD_AND_TEST_COMMANDS: &[&str] = &[
+    "dotnet restore",
+    "dotnet build",
+    "dotnet test",
+    "npm ci",
+    "npm test",
+    "npm run test",
+    "npm run build",
+    "npm run lint",
+    "npx ng test",
+    "npx ng build",
+    "npx ng lint",
+    "npx jest",
+    "npx vitest",
+    "npx tsc",
+    "yarn test",
+    "pnpm test",
+];
+
+/// Fixing a work item: edit files, and build and run the tests, but run nothing else.
+pub const FIX_AND_TEST_TOOLS: Tools =
+    Tools { tools: "Read,Grep,Glob,Edit,Write,Bash", accept_edits: true, commands: BUILD_AND_TEST_COMMANDS };
 
 /// Denied outright in every run, whatever else is configured.
 pub const DENIED_TOOLS: &str = "Bash,PowerShell,NotebookEdit,WebFetch,WebSearch,Task";
@@ -59,12 +86,25 @@ pub fn build_args_for(stream: bool, tools: Tools, extra_dirs: &[&Path]) -> Vec<S
         args.push("--verbose".to_string());
     }
     args.extend(CONFINEMENT.map(str::to_string));
-    let denied = if tools.accept_edits {
+    let mut denied = if tools.accept_edits {
         DENIED_TOOLS.to_string()
     } else {
         format!("{DENIED_TOOLS},Edit,Write,MultiEdit")
     };
+    if !tools.commands.is_empty() {
+        // The shell is there, but only the listed commands are allowed; in a
+        // headless run anything else is refused, as there is no one to ask.
+        denied = denied.split(',').filter(|t| *t != "Bash").collect::<Vec<_>>().join(",");
+    }
     args.extend(["--tools".to_string(), tools.tools.to_string(), "--disallowedTools".to_string(), denied]);
+    if !tools.commands.is_empty() {
+        let mut allowed = vec!["Bash(cd *)".to_string()];
+        for command in tools.commands {
+            allowed.push(format!("Bash({command})"));
+            allowed.push(format!("Bash({command} *)"));
+        }
+        args.extend(["--allowedTools".to_string(), allowed.join(",")]);
+    }
     if tools.accept_edits {
         args.extend(["--permission-mode".to_string(), "acceptEdits".to_string()]);
     }
@@ -144,6 +184,11 @@ pub async fn run_with(
     // No console window of its own on Windows; see `git::background`.
     #[cfg(windows)]
     command.creation_flags(crate::git::CREATE_NO_WINDOW);
+    if !tools.commands.is_empty() {
+        // Builds and tests run unattended: tools that would open a browser
+        // or wait for input see a CI machine instead.
+        command.env("CI", "true").env("BROWSER", "none");
+    }
     let mut child = command
         .args(build_args_for(stream, tools, extra_dirs))
         .current_dir(repo)
@@ -261,6 +306,16 @@ mod tests {
 
     #[test]
     fn fix_runs_can_edit_but_are_just_as_confined() {
+        let with_tests = build_args_for(false, FIX_AND_TEST_TOOLS, &[]);
+        let at = |flag: &str| with_tests[with_tests.iter().position(|a| a == flag).unwrap() + 1].clone();
+        assert!(at("--tools").ends_with(",Bash"));
+        assert!(!at("--disallowedTools").split(',').any(|t| t == "Bash"));
+        assert!(at("--disallowedTools").contains("WebFetch"));
+        assert!(at("--allowedTools").contains("Bash(dotnet test *)"));
+        assert!(at("--allowedTools").contains("Bash(npx ng test *)"));
+        assert!(!at("--allowedTools").contains("curl"));
+        assert!(with_tests.contains(&"--restricted".to_string()));
+
         let args = build_args_for(false, FIX_TOOLS, &[]);
         for flag in ["--restricted", "--safe-mode", "--strict-mcp-config"] {
             assert!(args.contains(&flag.to_string()));
