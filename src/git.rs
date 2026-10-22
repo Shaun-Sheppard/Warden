@@ -326,6 +326,19 @@ pub fn local_only_files(dir: &Path) -> Result<Vec<String>> {
     let mut paths = list(false)?;
     paths.extend(list(true)?);
     paths.retain(|p| !p.trim_end_matches('/').split('/').any(|part| NOT_COPIED.iter().any(|n| n.eq_ignore_ascii_case(part))));
+    // Claude's worktrees live inside the checkout: never copy them into another one.
+    // A wholly untracked `.claude/` is listed as one folder, so list what is in it instead.
+    if let Some(at) = paths.iter().position(|p| p == ".claude/") {
+        paths.remove(at);
+        if let Ok(entries) = std::fs::read_dir(dir.join(".claude")) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                let slash = if entry.path().is_dir() { "/" } else { "" };
+                paths.push(format!(".claude/{name}{slash}"));
+            }
+        }
+    }
+    paths.retain(|p| !p.starts_with(".claude/worktrees"));
     paths.sort();
     paths.dedup();
     Ok(paths)
@@ -368,6 +381,46 @@ pub fn exclude_build_output(dir: &Path) -> Result<()> {
     }
     std::fs::create_dir_all(exclude.parent().unwrap()).with_context(|| format!("Could not create {}", common.display()))?;
     std::fs::write(&exclude, text).with_context(|| format!("Could not write {}", exclude.display()))
+}
+
+/// Adds a line to the repository's own exclude list (`.git/info/exclude`), if not there.
+pub fn exclude_locally(repo: &Path, pattern: &str) -> Result<()> {
+    let mut common = git(repo);
+    common.args(["rev-parse", "--git-common-dir"]);
+    let common = PathBuf::from(run(common, "rev-parse")?.trim());
+    let common = if common.is_absolute() { common } else { repo.join(common) };
+    let exclude = common.join("info").join("exclude");
+    let mut text = std::fs::read_to_string(&exclude).unwrap_or_default();
+    if text.lines().any(|l| l.trim() == pattern) {
+        return Ok(());
+    }
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(pattern);
+    text.push('\n');
+    std::fs::create_dir_all(exclude.parent().unwrap()).with_context(|| format!("Could not create {}", common.display()))?;
+    std::fs::write(&exclude, text).with_context(|| format!("Could not write {}", exclude.display()))
+}
+
+/// Adds a worktree at `dir` on `branch`: a new branch from `start` if it does not
+/// exist yet, otherwise the existing branch.
+pub fn worktree_add_branch(repo: &Path, dir: &Path, branch: &str, start: &str) -> Result<()> {
+    if let Some(parent) = dir.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("Could not create {}", parent.display()))?;
+    }
+    let _ = git(repo).args(["worktree", "prune"]).output();
+    let mut exists = git(repo);
+    exists.args(["rev-parse", "--verify", "--quiet"]).arg(format!("refs/heads/{branch}"));
+    let has_branch = exists.output().map(|o| o.status.success()).unwrap_or(false);
+    let mut cmd = git(repo);
+    cmd.args(["worktree", "add"]);
+    if has_branch {
+        cmd.arg(dir).arg(branch);
+    } else {
+        cmd.arg("-b").arg(branch).arg(dir).arg(start);
+    }
+    run(cmd, "worktree add").map(|_| ())
 }
 
 /// Keeps everything currently changed or new in `dir` out of commits, for

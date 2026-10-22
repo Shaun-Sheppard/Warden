@@ -24,6 +24,9 @@ pub struct Settings {
     pub paused: bool,
     /// Whether PRs already open when monitoring first starts get reviewed.
     pub review_existing: bool,
+    /// A pull request already approved (by Warden, by "Approve anyway", or carrying
+    /// the user's approval vote) is not reviewed again when new commits are pushed.
+    pub skip_approved: bool,
     pub setup_complete: bool,
     /// `system`, `light` or `dark`.
     pub theme: String,
@@ -32,6 +35,8 @@ pub struct Settings {
     pub review_prompt: String,
     /// Show a system notification when a review starts and when it finishes.
     pub notifications: bool,
+    /// Stop the computer going to sleep when idle while Warden runs.
+    pub keep_awake: bool,
     /// Triage the work items assigned to the user.
     pub triage_enabled: bool,
     /// Projects whose boards are triaged; falls back to `projects`, then all.
@@ -252,11 +257,13 @@ impl Default for Settings {
             dry_run: false,
             paused: false,
             review_existing: false,
+            skip_approved: false,
             setup_complete: false,
             theme: "system".to_string(),
             mention_author: true,
             review_prompt: String::new(),
             notifications: true,
+            keep_awake: false,
             triage_enabled: false,
             triage_projects: Vec::new(),
             triage_prompt: String::new(),
@@ -350,6 +357,9 @@ pub struct Record {
     /// approved | approvedWithSuggestions | waitingForAuthor
     pub vote: Option<String>,
     pub auto_complete: bool,
+    /// Approved by the user despite the review, with the reason they gave.
+    #[serde(default)]
+    pub approved_anyway: Option<String>,
     pub merged: bool,
     pub stats: Option<Stats>,
     pub started_at: DateTime<Utc>,
@@ -718,6 +728,22 @@ pub struct TriageState {
     /// Fixing is paused because a fix failed on something every fix would hit
     /// (a settings or setup problem), rather than on the item itself.
     pub fix_problem: Option<String>,
+}
+
+impl TriageState {
+    /// The state as the window needs it: without fixes' diffs, which are large
+    /// and only shown when asked for (`fix_diff`).
+    pub fn without_diffs(mut self) -> Self {
+        for r in &mut self.records {
+            if let Some(f) = r.fix.as_mut() {
+                f.diff.clear();
+            }
+            for f in &mut r.history {
+                f.diff.clear();
+            }
+        }
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

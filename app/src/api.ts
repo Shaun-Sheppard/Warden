@@ -27,6 +27,9 @@ export interface Api {
   testLocalModel(url: string, model: string): Promise<string>;
   forgetItem(id: number): Promise<void>;
   listProjects(): Promise<string[]>;
+  fixDiff(id: number): Promise<string>;
+  approveAnyway(prId: number, project: string, reason: string): Promise<void>;
+  newSession(id: number): Promise<string>;
   itemComments(id: number): Promise<{ author: string; date: string; text: string }[]>;
   /** Area paths and repositories in a project, for mapping one to the other. */
   projectStructure(project: string): Promise<ProjectStructure>;
@@ -97,6 +100,9 @@ const tauriApi: Api = {
   forgetItem: (id) => invoke("forget_item", { id }),
   listProjects: () => invoke("list_projects"),
   itemComments: (id) => invoke("item_comments", { id }),
+  fixDiff: (id) => invoke("fix_diff", { id }),
+  approveAnyway: (prId, project, reason) => invoke("approve_anyway", { prId, project, reason }),
+  newSession: (id) => invoke("new_session", { id }),
   projectStructure: (project) => invoke("project_structure", { project }),
   triageChoices: (projects) => invoke("triage_choices", { projects }),
   onTriage: (handler) => subscribe("triage", handler),

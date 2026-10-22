@@ -36,6 +36,8 @@ export interface Settings {
   dryRun: boolean;
   paused: boolean;
   reviewExisting: boolean;
+  /** Don't review a pull request again once it has been approved. */
+  skipApproved?: boolean;
   setupComplete: boolean;
   theme: "system" | "light" | "dark";
   mentionAuthor: boolean;
@@ -68,6 +70,8 @@ export interface Settings {
   triageMaxFixes: number;
   triagePostResults: boolean;
   notifications: boolean;
+  /** Stop the computer going to sleep when idle while Warden runs. */
+  keepAwake?: boolean;
   triageEnabled: boolean;
   triageProjects: string[];
   triageStates: string[];
@@ -243,6 +247,8 @@ export interface LogLine {
 export type Outcome = "approved" | "rejected" | "failed" | "baseline";
 
 export interface HistoryRecord {
+  /** Approved by the user despite the review, with their reason. */
+  approvedAnyway?: string | null;
   recordId: string;
   pr: PrInfo;
   status: Outcome;

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { ApproveAnyway } from "./approve";
 import { api } from "./api";
 import type { HistoryRecord, Live, Settings, Severity } from "./types";
 import { Avatar, CheckButton } from "./ui";
@@ -353,6 +354,18 @@ export function Detail({ record: r, reviews, now, onOpen, onRetry, onSettings, p
           </div>
         )}
         {r.review && !r.vote && !r.dryRun && r.status !== "failed" && !r.review.manipulation && <VoteNow record={r} onSettings={onSettings} />}
+        {r.approvedAnyway && (
+          <div className="warning tint-ok">
+            <b className="tone-ok">Approved anyway</b>
+            <span className="selectable">{r.approvedAnyway}</span>
+          </div>
+        )}
+        {r.status === "rejected" && r.review && !r.dryRun && !r.approvedAnyway && r.vote !== "approved" && (
+          <div className="warning tint-major">
+            <span><b className="tone-major">Failed review.</b> If the issues are not a problem here, approve it anyway with your reason.</span>
+            <ApproveAnyway prId={r.pr.id} project={r.pr.project} />
+          </div>
+        )}
         {r.error && (
           <div className="warning tint-critical" role="alert">
             <b className="tone-critical">{r.status === "failed" ? "What went wrong" : "Not everything went through"}</b>

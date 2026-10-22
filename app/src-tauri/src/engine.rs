@@ -157,6 +157,13 @@ pub fn needs_review(pr: &PullRequest, tracked: Option<&Tracked>) -> bool {
     }
 }
 
+/// Whether a PR already has an approval, so that with "don't review approved pull
+/// requests again" on it is left alone: Warden approved it (or the user approved it
+/// anyway), or it carries the user's own approval vote.
+pub fn already_approved(pr: &PullRequest, tracked: Option<&Tracked>, my_id: &str) -> bool {
+    tracked.is_some_and(|t| t.outcome == Outcome::Approved) || (!my_id.is_empty() && pr.vote_of(my_id).is_some_and(|v| v >= 5))
+}
+
 /// PRs monitoring cares about at all: not drafts, raised by a chosen person.
 pub fn eligible<'a>(prs: &'a [PullRequest], people: &[String]) -> Vec<&'a PullRequest> {
     prs.iter()
@@ -522,6 +529,8 @@ impl Engine {
         }
         self.refresh_merged(&org).await;
 
+        // Only needed to spot the user's own approval votes.
+        let my_id = if settings.skip_approved { self.my_id(&org).await.unwrap_or_default() } else { String::new() };
         let todo = {
             let mut shared = self.shared.lock().unwrap();
             if !shared.tracking.baselined {
@@ -538,7 +547,10 @@ impl Engine {
                 shared.tracking.baselined = true;
                 self.store.save_tracking(&shared.tracking)?;
             }
-            let todo = plan(&prs, &[], &shared.tracking);
+            let mut todo = plan(&prs, &[], &shared.tracking);
+            if settings.skip_approved {
+                todo.retain(|pr| !already_approved(pr, shared.tracking.prs.get(&pr.pull_request_id), &my_id));
+            }
             shared.live.queue = todo.iter().map(|pr| pr_info(pr, &org)).collect();
             shared.live.claimed.clear();
             shared.live.last_check = Some(Utc::now());
@@ -770,6 +782,7 @@ impl Engine {
             posted: false,
             vote: None,
             auto_complete: false,
+            approved_anyway: None,
             merged: false,
             stats: None,
             started_at: started,
@@ -1009,6 +1022,67 @@ impl Engine {
 
     /// Casts the vote a finished review calls for, on request, without
     /// reviewing again. Refused if the PR has moved on since the review.
+    /// Approves a pull request that failed review, on the user's say-so: their reason
+    /// is posted as a reply on Warden's review comment, which is then resolved, and the
+    /// PR is approved and set to auto-complete.
+    pub async fn approve_anyway(&self, pr_id: u64, project: &str, reason: &str) -> Result<()> {
+        let reason = reason.trim();
+        if reason.chars().count() < 5 {
+            anyhow::bail!("Say why it is fine to approve it; the reason is posted on the pull request.");
+        }
+        let settings = self.settings();
+        if settings.dry_run {
+            anyhow::bail!("Dry run is on, so nothing can be approved. Turn it off in Settings → PR review first.");
+        }
+        let pat = prr::auth::get_pat()?;
+        let org = AdoClient::new(settings.organization.trim(), "", &pat)?;
+        let client = org.with_project(project);
+        let current = client.get_pr(pr_id).await?;
+        if !current.status.is_empty() && !current.status.eq_ignore_ascii_case("active") {
+            anyhow::bail!("This pull request is already {}.", current.status);
+        }
+        let me = self.me(&org).await?;
+        let name = if me.display_name.is_empty() { "the reviewer".to_string() } else { me.display_name.clone() };
+        let note = format!("**Approved anyway** by {name}: {reason}");
+        let repo_id = current.repository.id.clone();
+
+        // Reply on Warden's own review comment(s) and resolve them; otherwise leave a note.
+        let threads = client.open_threads(&repo_id, pr_id).await?;
+        let ours: Vec<&prr::ado::PrThread> = threads
+            .iter()
+            .filter(|t| t.first_author_id.eq_ignore_ascii_case(&me.id))
+            .filter(|t| t.comments.first().is_some_and(|(_, text)| text.contains(prr::config::DEFAULT_COMMENT_PREFIX)))
+            .collect();
+        if ours.is_empty() {
+            client.post_thread(&repo_id, pr_id, &prr::ado::thread_body(&note, None, None)).await?;
+        }
+        for thread in &ours {
+            client.reply_to_thread(&repo_id, pr_id, thread.id, &note).await?;
+            client.set_thread_status(&repo_id, pr_id, thread.id, "fixed").await?;
+        }
+
+        let info = pr_info(&current, &client);
+        let (label, auto_complete, message) = self.vote(&org, &client, &settings, &info, Some(10)).await?;
+        {
+            let mut shared = self.shared.lock().unwrap();
+            // The latest review of this PR records the override.
+            if let Some(r) = shared.history.iter_mut().filter(|r| r.pr.id == pr_id).max_by_key(|r| r.finished_at) {
+                r.vote = Some(label.to_string());
+                r.auto_complete = auto_complete;
+                r.approved_anyway = Some(reason.to_string());
+                r.lines.push(line("ok", format!("Approved anyway by {name}: {reason}")));
+                r.lines.push(line(if auto_complete { "ok" } else { "warn" }, message));
+            }
+            self.store.save_history(&shared.history)?;
+            // This commit is settled: it is not reviewed again until new commits arrive.
+            let commit = current.last_merge_source_commit.as_ref().map(|c| c.commit_id.clone());
+            shared.tracking.prs.insert(pr_id, Tracked { commit, outcome: Outcome::Approved, attempts: 0 });
+            self.store.save_tracking(&shared.tracking)?;
+        }
+        self.emit_history();
+        Ok(())
+    }
+
     pub async fn apply_vote(&self, record_id: &str) -> Result<()> {
         let (record, settings) = {
             let shared = self.shared.lock().unwrap();
@@ -1073,6 +1147,15 @@ mod tests {
     fn new_prs_are_reviewed_and_finished_ones_are_not() {
         let p = pr(1, "a", "c1", false);
         assert!(needs_review(&p, None));
+        // Approved before: left alone with "don't review approved pull requests again" on.
+        assert!(already_approved(&p, Some(&tracked("c0", Outcome::Approved, 0)), ""));
+        assert!(!already_approved(&p, Some(&tracked("c0", Outcome::Rejected, 0)), "me"));
+        assert!(!already_approved(&p, None, "me"));
+        let mut voted = p.clone();
+        voted.reviewers = serde_json::from_value(json!([{ "id": "ME", "vote": 10 }, { "id": "other", "vote": -10 }])).unwrap();
+        assert!(already_approved(&voted, None, "me"));
+        voted.reviewers = serde_json::from_value(json!([{ "id": "me", "vote": -5 }])).unwrap();
+        assert!(!already_approved(&voted, None, "me"));
         assert!(!needs_review(&p, Some(&tracked("c1", Outcome::Approved, 0))));
         // New commits after an approval are reviewed, so the approval never covers unseen code.
         assert!(needs_review(&p, Some(&tracked("c0", Outcome::Approved, 0))));
@@ -1120,6 +1203,7 @@ mod tests {
             posted: true,
             vote: Some("approvedWithSuggestions".into()),
             auto_complete: true,
+            approved_anyway: None,
             merged: false,
             stats: None,
             started_at: Utc::now(),
@@ -1178,6 +1262,7 @@ mod tests {
             posted: false,
             vote: None,
             auto_complete: false,
+            approved_anyway: None,
             merged: false,
             stats: None,
             started_at: Utc::now(),

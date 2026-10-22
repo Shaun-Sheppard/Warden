@@ -1,6 +1,7 @@
 // Prevents an extra console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod awake;
 mod engine;
 mod model;
 mod store;
@@ -87,6 +88,7 @@ fn get_settings(engine: Shared) -> Settings {
 #[tauri::command(async)]
 fn save_settings(engine: Shared, settings: Settings) -> Result<Settings, String> {
     prefer_cli(&settings.cli_path);
+    awake::keep_awake(settings.keep_awake);
     engine.update_settings(settings).map_err(err)
 }
 
@@ -146,7 +148,54 @@ fn end_update(engine: Shared) {
 
 #[tauri::command]
 fn get_triage(engine: Shared) -> TriageState {
-    engine.triage()
+    engine.triage().without_diffs()
+}
+
+/// The diff of an item's latest fix, left out of the triage state the window gets.
+#[tauri::command]
+fn fix_diff(engine: Shared, id: u64) -> String {
+    engine.triage().records.into_iter().find(|r| r.id == id).and_then(|r| r.fix).map(|f| f.diff).unwrap_or_default()
+}
+
+/// Sends the latest value of an event to the window at most every 250ms, and not at
+/// all while the window is hidden (it asks for everything again when shown). Claude's
+/// activity changes the live and triage state many times a second.
+struct Throttled {
+    latest: std::sync::Mutex<Option<serde_json::Value>>,
+    scheduled: std::sync::atomic::AtomicBool,
+}
+
+impl Throttled {
+    const fn new() -> Self {
+        Self { latest: std::sync::Mutex::new(None), scheduled: std::sync::atomic::AtomicBool::new(false) }
+    }
+
+    fn send(&'static self, handle: &AppHandle, event: &'static str, value: impl Serialize) {
+        use std::sync::atomic::Ordering;
+        let Ok(value) = serde_json::to_value(value) else { return };
+        *self.latest.lock().unwrap() = Some(value);
+        if self.scheduled.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let handle = handle.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            self.scheduled.store(false, Ordering::SeqCst);
+            let latest = self.latest.lock().unwrap().take();
+            if let Some(value) = latest {
+                if window_visible(&handle) {
+                    let _ = handle.emit(event, value);
+                }
+            }
+        });
+    }
+}
+
+static LIVE_OUT: Throttled = Throttled::new();
+static TRIAGE_OUT: Throttled = Throttled::new();
+
+fn window_visible(handle: &AppHandle) -> bool {
+    handle.get_webview_window("main").and_then(|w| w.is_visible().ok()).unwrap_or(true)
 }
 
 /// Queues Claude to fix a triaged work item: branch, fix, tests, pull request.
@@ -171,6 +220,27 @@ async fn retry_failed_fixes(engine: Shared<'_>) -> Result<usize, String> {
 #[tauri::command]
 async fn set_recommendation(engine: Shared<'_>, id: u64, ai: bool) -> Result<(), String> {
     engine.set_recommendation(id, ai).map_err(err)
+}
+
+/// Starts a Claude Code session for an item: a worktree in the user's checkout from the
+/// latest base branch, then the Claude desktop app opened there with `/fix <id>` ready.
+#[tauri::command]
+async fn new_session(app: AppHandle, engine: Shared<'_>, id: u64) -> Result<String, String> {
+    let work = engine.session_worktree(id).await.map_err(err)?;
+    let url = format!(
+        "claude://code/new?folder={}&q={}",
+        urlencoding::encode(&work.to_string_lossy()),
+        urlencoding::encode(&format!("/fix {id}"))
+    );
+    use tauri_plugin_opener::OpenerExt;
+    app.opener().open_url(url, None::<&str>).map_err(|e| format!("Could not open the Claude app: {e}"))?;
+    Ok(work.display().to_string())
+}
+
+/// Approves a pull request that failed review, with the user's reason posted on it.
+#[tauri::command]
+async fn approve_anyway(engine: Shared<'_>, pr_id: u64, project: String, reason: String) -> Result<(), String> {
+    engine.approve_anyway(pr_id, &project, &reason).await.map_err(err)
 }
 
 /// Checks the local model answers, and how quickly.
@@ -490,18 +560,16 @@ fn main() {
                 Store::new(dir),
                 Box::new(move |change| {
                     match change {
-                        Change::Live(live) => {
-                            let _ = handle.emit("live", live);
-                        }
+                        Change::Live(live) => LIVE_OUT.send(&handle, "live", live),
                         Change::History(history) => {
-                            let _ = handle.emit("history", history);
+                            if window_visible(&handle) {
+                                let _ = handle.emit("history", history);
+                            }
                         }
                         Change::Fixes(fixes) => {
                             let _ = handle.emit("fixes", fixes);
                         }
-                        Change::Triage(triage) => {
-                            let _ = handle.emit("triage", triage);
-                        }
+                        Change::Triage(triage) => TRIAGE_OUT.send(&handle, "triage", triage.without_diffs()),
                         Change::Notify { title, body } => {
                             use tauri_plugin_notification::NotificationExt;
                             let _ = handle.notification().builder().title(title).body(body).show();
@@ -510,6 +578,7 @@ fn main() {
                 }),
             ));
             prefer_cli(&engine.settings().cli_path);
+            awake::keep_awake(engine.settings().keep_awake);
             app.manage(engine.clone());
             tauri::async_runtime::spawn(engine.run());
             build_tray(app)?;
@@ -528,6 +597,7 @@ fn main() {
             default_prompt,
             default_triage_prompt,
             get_live,
+            fix_diff,
             get_history,
             check_now,
             retry_review,
@@ -545,6 +615,8 @@ fn main() {
             forget_item,
             set_complexity,
             test_local_model,
+            approve_anyway,
+            new_session,
             list_projects,
             item_comments,
             project_structure,

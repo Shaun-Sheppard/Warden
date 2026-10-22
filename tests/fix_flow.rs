@@ -167,3 +167,31 @@ fn local_files_and_setup_output_stay_out_of_the_commit() {
     let changed = sh(&work, &["show", "--name-only", "--format=", &commit]);
     assert_eq!(changed, "calc.py");
 }
+
+#[test]
+fn a_session_worktree_comes_from_the_base_branch_and_is_never_copied() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_origin, clone) = setup(tmp.path());
+    let local = tmp.path().join("mine");
+    sh(tmp.path(), &["clone", "-q", clone.to_str().unwrap(), local.to_str().unwrap()]);
+
+    // A worktree for an item, on a new branch from the base branch, kept out of `git status`.
+    git::exclude_locally(&local, "/.claude/worktrees/").unwrap();
+    git::exclude_locally(&local, "/.claude/worktrees/").unwrap();
+    let work = local.join(".claude/worktrees/4102-page-heading");
+    git::worktree_add_branch(&local, &work, "4102-page-heading", "origin/main").unwrap();
+    assert_eq!(sh(&work, &["rev-parse", "--abbrev-ref", "HEAD"]), "4102-page-heading");
+    assert_eq!(sh(&local, &["status", "--porcelain"]), "");
+    let exclude = std::fs::read_to_string(local.join(".git/info/exclude")).unwrap();
+    assert_eq!(exclude.matches("/.claude/worktrees/").count(), 1);
+
+    // Asking again for an existing branch reuses it rather than failing.
+    std::fs::remove_dir_all(&work).unwrap();
+    git::worktree_add_branch(&local, &work, "4102-page-heading", "origin/main").unwrap();
+
+    // Local-only files never include Claude's worktrees, even when `.claude/` is untracked.
+    std::fs::write(local.join(".claude/settings.local.json"), "{}").unwrap();
+    let found = git::local_only_files(&local).unwrap();
+    assert!(found.contains(&".claude/settings.local.json".to_string()), "{found:?}");
+    assert!(!found.iter().any(|p| p.contains("worktrees")), "{found:?}");
+}

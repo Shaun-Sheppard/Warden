@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "./api";
+import { ApproveAnyway } from "./approve";
 import { DiffView } from "./fixes";
 import type { ItemFix, TriageRecord, TriageState } from "./types";
 import { ago } from "./util";
@@ -223,10 +224,19 @@ function ReviewCallout({ fix }: { fix: ItemFix }) {
   );
 }
 
-function FixSection({ fix }: { fix: ItemFix }) {
+function FixSection({ fix, id }: { fix: ItemFix; id: number }) {
   const running = RUNNING.includes(fix.status);
   const report = parseReport(fix.report);
   const [diffOpen, setDiffOpen] = useState(false);
+  // The change itself is not sent with the board (it can be large); it is fetched when opened.
+  const [diff, setDiff] = useState<string | null>(null);
+  useEffect(() => {
+    if (!diffOpen) return;
+    let live = true;
+    setDiff(null);
+    api.fixDiff(id).then((d) => live && setDiff(d), () => live && setDiff(""));
+    return () => { live = false; };
+  }, [diffOpen, id, fix.commit, fix.finishedAt]);
   const [logOpen, setLogOpen] = useState(running);
   const logRef = useRef<HTMLDivElement>(null);
   useEffect(() => { if (running) setLogOpen(true); }, [running]);
@@ -296,7 +306,7 @@ function FixSection({ fix }: { fix: ItemFix }) {
               <span style={{ fontWeight: 500 }}>{fix.files.length} file{fix.files.length === 1 ? "" : "s"} changed</span>
               <span className="mono tone-ok">+{added}</span><span className="mono tone-critical">−{removed}</span>
             </button>
-            {diffOpen && <div className="disclosure-body"><DiffView fix={fix} /></div>}
+            {diffOpen && <div className="disclosure-body">{diff === null ? <span className="help"><span className="spinner" aria-hidden /> Loading the change…</span> : <DiffView fix={{ ...fix, diff }} />}</div>}
           </>
         )}
         <button className="disclosure" onClick={() => setLogOpen(!logOpen)} aria-expanded={logOpen}>
@@ -456,7 +466,7 @@ function ItemModal({ r, onClose }: { r: TriageRecord; onClose: () => void }) {
               </span>
             )}
           </section>
-          {fix && <FixSection fix={fix} />}
+          {fix && <FixSection fix={fix} id={r.id} />}
           <Comments id={r.id} />
           {!!r.history?.length && (
             <section className="modal-section">
@@ -522,6 +532,9 @@ function ItemModal({ r, onClose }: { r: TriageRecord; onClose: () => void }) {
               {r.complexity === "complex" ? "Treat as a simple fix" : "Treat as a complex fix"}
             </button>
           )}
+          {column === "failedReview" && fix?.prId && (fix.review === "rejected" || fix.review === "waiting") && !fixBusy && (
+            <ApproveAnyway prId={fix.prId} project={r.project} compact />
+          )}
           {fix?.prUrl && <button className="btn" onClick={() => api.open(fix.prUrl!)}>Open pull request ↗</button>}
           <button className="btn" onClick={() => api.open(r.url)}>Open in Azure DevOps ↗</button>
           {r.status !== "triaging" && r.status !== "pending" && !fixBusy && (
@@ -540,29 +553,82 @@ function ItemModal({ r, onClose }: { r: TriageRecord; onClose: () => void }) {
   );
 }
 
-function Card({ r, onOpen }: { r: TriageRecord; onOpen: () => void }) {
+/** What can be done with an item from the board without opening it. */
+interface ItemActions {
+  open: (id: number) => void;
+  newSession: (r: TriageRecord) => void;
+  remove: (r: TriageRecord) => void;
+}
+
+/** The ⋯ button on a card or row, and its menu. */
+function ItemMenu({ r, actions }: { r: TriageRecord; actions: ItemActions }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
+    const key = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); setOpen(false); } };
+    document.addEventListener("mousedown", away);
+    document.addEventListener("keydown", key, true);
+    return () => { document.removeEventListener("mousedown", away); document.removeEventListener("keydown", key, true); };
+  }, [open]);
   const column = columnOf(r);
+  // Only items still waiting for someone to start on them.
+  const canSession = (column === "ai" || column === "person") && !!r.repo;
+  const pick = (run: () => void) => (e: React.MouseEvent) => { e.stopPropagation(); setOpen(false); run(); };
   return (
-    <button className={`board-card ${column === "fixing" ? "is-fixing" : ""} ${column === "fixed" ? "is-fixed" : ""}`} onClick={onOpen}>
-      <span className="card-title">{r.title} <span className="tone-faint" style={{ fontWeight: 400 }}>#{r.id}</span></span>
-      <ParentLine r={r} />
-      <span className="mono item-meta">{meta(r)}</span>
-      <span className="pills"><ItemPills r={r} /></span>
-    </button>
+    <div className="item-menu" ref={ref} onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+      <button className="item-menu-button" aria-label={`Actions for #${r.id}`} aria-haspopup="menu" aria-expanded={open}
+        onClick={(e) => { e.stopPropagation(); setOpen(!open); }}>⋯</button>
+      {open && (
+        <div className="item-menu-list" role="menu">
+          <button role="menuitem" onClick={pick(() => actions.open(r.id))}>Open</button>
+          {canSession && (
+            <button role="menuitem" onClick={pick(() => actions.newSession(r))}
+              title={`A new worktree from the latest base branch, and a Claude Code session there with /fix ${r.id} ready`}>New session</button>
+          )}
+          <button role="menuitem" className="danger" onClick={pick(() => actions.remove(r))}
+            title="Forget this item; the next check adds it back if it still qualifies">Remove</button>
+        </div>
+      )}
+    </div>
   );
 }
 
-function Row({ r, onOpen, first }: { r: TriageRecord; onOpen: () => void; first: boolean }) {
+/** Opens an item from the keyboard as well as by click (cards are not buttons, as they hold one). */
+const activate = (open: () => void) => ({
+  role: "button" as const,
+  tabIndex: 0,
+  onClick: open,
+  onKeyDown: (e: React.KeyboardEvent) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } },
+});
+
+function Card({ r, actions }: { r: TriageRecord; actions: ItemActions }) {
+  const column = columnOf(r);
   return (
-    <button className={`list-row ${first ? "" : "divided"}`} onClick={onOpen}>
+    <div className={`board-card ${column === "fixing" ? "is-fixing" : ""} ${column === "fixed" ? "is-fixed" : ""}`} {...activate(() => actions.open(r.id))}>
+      <span className="card-head">
+        <span className="card-title">{r.title} <span className="tone-faint" style={{ fontWeight: 400 }}>#{r.id}</span></span>
+        <ItemMenu r={r} actions={actions} />
+      </span>
+      <ParentLine r={r} />
+      <span className="mono item-meta">{meta(r)}</span>
+      <span className="pills"><ItemPills r={r} /></span>
+    </div>
+  );
+}
+
+function Row({ r, actions, first }: { r: TriageRecord; actions: ItemActions; first: boolean }) {
+  return (
+    <div className={`list-row ${first ? "" : "divided"}`} {...activate(() => actions.open(r.id))}>
       <span className="stack" style={{ gap: 4, minWidth: 0 }}>
         <span className="row-title">{r.title} <span className="tone-faint" style={{ fontWeight: 400 }}>#{r.id}</span></span>
         <ParentLine r={r} />
         <span className="mono item-meta">{meta(r)}</span>
       </span>
       <span className="pills" style={{ justifyContent: "flex-end" }}><ItemPills r={r} /></span>
-      <span className="row-chev" aria-hidden>›</span>
-    </button>
+      <ItemMenu r={r} actions={actions} />
+    </div>
   );
 }
 
@@ -583,6 +649,24 @@ export function Triage({ triage, now, autoFix, paused, onSettings, project, onPr
 
   const [openId, setOpenId] = useState<number | null>(null);
   const [showAll, setShowAll] = useState<Partial<Record<Column, boolean>>>({});
+  // What happened after a board action (a new session, a removal), shown above the board.
+  const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
+  const actions: ItemActions = {
+    open: (id) => setOpenId(id),
+    newSession: (r) => {
+      setNotice({ ok: true, text: `Getting a worktree ready for #${r.id}…` });
+      api.newSession(r.id).then(
+        (path) => setNotice({ ok: true, text: `Opened Claude in ${path}. Confirm the folder, then press Enter to start /fix ${r.id}.` }),
+        (e) => setNotice({ ok: false, text: `Could not start a session for #${r.id}: ${e}` }),
+      );
+    },
+    remove: (r) => {
+      api.forgetItem(r.id).then(
+        () => setNotice({ ok: true, text: `Removed #${r.id}. It comes back at the next check if it still qualifies.` }),
+        (e) => setNotice({ ok: false, text: String(e) }),
+      );
+    },
+  };
   const setProject = onProject;
   const [retrying, setRetrying] = useState(false);
 
@@ -660,6 +744,14 @@ export function Triage({ triage, now, autoFix, paused, onSettings, project, onPr
           </span>
         </div>
       )}
+      {notice && (
+        <div className={`warning ${notice.ok ? "tint-ok" : "tint-critical"}`} role="status">
+          <div className="inline" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
+            <span className="selectable">{notice.text}</span>
+            <button className="modal-close" style={{ width: 24, height: 24, fontSize: 14 }} onClick={() => setNotice(null)} aria-label="Dismiss">×</button>
+          </div>
+        </div>
+      )}
       <div className="triage-bar">
         <div className="triage-bar-head">
           <b>{onBoard} item{onBoard === 1 ? "" : "s"} assigned to you in a to-do state{inProject ? ` in ${inProject}` : ""}</b>
@@ -735,7 +827,7 @@ export function Triage({ triage, now, autoFix, paused, onSettings, project, onPr
                   <span className="help col-desc">{COLUMNS[c].desc}</span>
                 </div>
                 {items.length === 0 && <div className="col-empty">{q ? "No matches" : COLUMNS[c].empty}</div>}
-                {(showAll[c] ? items : items.slice(0, COLUMN_LIMIT)).map((r) => <Card key={r.id} r={r} onOpen={() => setOpenId(r.id)} />)}
+                {(showAll[c] ? items : items.slice(0, COLUMN_LIMIT)).map((r) => <Card key={r.id} r={r} actions={actions} />)}
                 {items.length > COLUMN_LIMIT && (
                   <button className="col-more" onClick={() => setShowAll((s) => ({ ...s, [c]: !s[c] }))}>
                     {showAll[c] ? `Show the first ${COLUMN_LIMIT}` : `Show all ${items.length} (${items.length - COLUMN_LIMIT} more)`}
@@ -761,7 +853,7 @@ export function Triage({ triage, now, autoFix, paused, onSettings, project, onPr
             {!shut && (
               <div className={`list-card ${c === "fixing" ? "is-fixing" : ""}`}>
                 {items.length === 0 && <div className="list-empty">{q ? "No matches." : `${COLUMNS[c].empty}.`}</div>}
-                {items.map((r, i) => <Row key={r.id} r={r} first={i === 0} onOpen={() => setOpenId(r.id)} />)}
+                {items.map((r, i) => <Row key={r.id} r={r} first={i === 0} actions={actions} />)}
               </div>
             )}
           </section>

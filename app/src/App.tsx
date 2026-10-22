@@ -126,12 +126,31 @@ export default function App() {
     api.getFixes().then(setFixes);
     api.getTriage().then(setTriage);
     const stops = [api.onLive(setLive), api.onHistory(setHistory), api.onSettings(setSettings), api.onFixes(setFixes), api.onTriage(setTriage)];
-    const timer = setInterval(() => setNow(Date.now()), 1000);
+    // Updates are not sent while the window is hidden, so catch up when it is shown again.
+    const onShow = () => {
+      if (document.visibilityState !== "visible") return;
+      setNow(Date.now());
+      api.getLive().then(setLive);
+      api.getHistory().then(setHistory);
+      api.getFixes().then(setFixes);
+      api.getTriage().then(setTriage);
+    };
+    document.addEventListener("visibilitychange", onShow);
     return () => {
       stops.forEach((stop) => stop());
-      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onShow);
     };
   }, []);
+
+  // The clock behind "checked 24s ago" and the like. Every second only while a review's
+  // timer is on screen; otherwise every 10 seconds, and not at all while hidden.
+  const fastClock = live?.status === "reviewing" || !!live?.checking;
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") setNow(Date.now());
+    }, fastClock ? 1000 : 10000);
+    return () => clearInterval(timer);
+  }, [fastClock]);
 
   useEffect(() => {
     bodyRef.current?.scrollTo(0, 0);
@@ -181,6 +200,13 @@ export default function App() {
   };
   const record = history.find((r) => r.recordId === selected);
   const reviewing = live.status === "reviewing";
+  // The countdown bar's animation: its whole length is the wait, started part-way through.
+  const waitAnimation = (() => {
+    if (!live.nextCheck || !live.waitStarted) return undefined;
+    const start = Date.parse(live.waitStarted), end = Date.parse(live.nextCheck);
+    if (!(end > start)) return undefined;
+    return { animationDuration: `${(end - start) / 1000}s`, animationDelay: `${-(Date.now() - start) / 1000}s` };
+  })();
   // 0 → 1 over the wait between checks.
   const checkProgress = (() => {
     if (!live.nextCheck || !live.waitStarted) return 0;
@@ -221,7 +247,7 @@ export default function App() {
         <div className="drag" data-tauri-drag-region />
         <div className="status-card" style={{ "--status": statusColor } as React.CSSProperties}>
           <div className="status-row">
-            <i className={`status-dot ${live.status === "idle" || reviewing ? "pulse" : ""}`} aria-hidden />
+            <i className="status-dot" aria-hidden />
             <div className="stack" style={{ gap: 1, minWidth: 0 }}>
               <div className="status-title">{statusText}</div>
               <div className="status-sub">
@@ -243,7 +269,8 @@ export default function App() {
             <div className={`status-bar ${live.checking || reviewing ? "busy" : ""}`} role="progressbar"
               aria-label="Time until the next check" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(checkProgress * 100)}
               title={live.nextCheck && !live.checking && !reviewing ? `Next check in ${Math.max(0, Math.round((Date.parse(live.nextCheck) - now) / 1000))}s · every ${pollLabel(settings.pollSeconds)}` : undefined}>
-              <span style={{ width: live.checking || reviewing ? undefined : `${checkProgress * 100}%` }} />
+              {/* Runs on the GPU from start to end on its own, rather than being redrawn each second. */}
+              <span key={live.waitStarted ?? "busy"} style={live.checking || reviewing ? undefined : waitAnimation} />
             </div>
           )}
         </div>

@@ -326,6 +326,13 @@ export const mockApi: Api = {
     return later(undefined);
   },
   listProjects: () => later(["Payments", "Customer Web", "Platform", "Data"]),
+  newSession: (id) => later(`/Users/you/Projects/payments-api/.claude/worktrees/${id}-fix`, 900),
+  approveAnyway: (prId) => {
+    triage = { ...triage, records: triage.records.map((r) => (r.fix?.prId === prId ? { ...r, fix: { ...r.fix, review: "approved" } } : r)) };
+    triageHandlers.forEach((h) => h(triage));
+    return later(undefined, 700);
+  },
+  fixDiff: (id) => later(triage.records.find((r) => r.id === id)?.fix?.diff ?? ""),
   itemComments: (id) => later(id % 2 ? [
     { author: "QA Tester", date: "2026-10-14", text: "Retested on staging: the refund total is still wrong when two partial refunds are made on the same day. Moving back to To Do." },
     { author: "Shaun Sheppard", date: "2026-10-12", text: "Fixed in pull request 801; ready for testing." },

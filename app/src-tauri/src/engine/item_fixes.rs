@@ -565,13 +565,20 @@ impl Engine {
         });
     }
 
+    /// Adds a line to a fix's log. Shown straight away but not written to disk
+    /// on its own: Claude's activity comes many lines a minute, and the next
+    /// real change saves it.
     fn item_fix_log(&self, id: u64, kind: &str, text: impl Into<String>) {
         let entry = line(kind, text);
-        self.update_item_fix(id, |f| {
-            if f.lines.len() < MAX_LINES {
-                f.lines.push(entry);
+        {
+            let mut shared = self.shared.lock().unwrap();
+            if let Some(f) = shared.triage.records.iter_mut().find(|r| r.id == id).and_then(|r| r.fix.as_mut()) {
+                if f.lines.len() < MAX_LINES {
+                    f.lines.push(entry);
+                }
             }
-        });
+        }
+        (self.notifier)(Change::Triage(self.triage()));
     }
 
     /// Queues a fix for a triaged work item. It starts once nothing else is being fixed.
@@ -687,6 +694,50 @@ impl Engine {
                 _ => {}
             }
         }
+    }
+
+    /// Gets a worktree ready in the user's own checkout for working on an item by hand
+    /// in Claude Code: the latest base branch is fetched, a branch `<id>-<title>` and a
+    /// worktree under `.claude/worktrees` are made (or reused), and local-only files are
+    /// copied in. Returns the worktree's path.
+    pub async fn session_worktree(&self, id: u64) -> Result<PathBuf> {
+        let settings = self.settings();
+        let record = self.triage().records.into_iter().find(|r| r.id == id).context("That work item is not in the triage list.")?;
+        let mapping = find_mapping(&settings.all_areas(), &record.project, &record.area_path)
+            .cloned()
+            .context("No repository is mapped for this item's area path. Add one in Settings → Projects.")?;
+        let local_path = mapping.local_path.trim();
+        if local_path.is_empty() {
+            anyhow::bail!("Set your local copy of {} under its area in Settings → Projects, so the session can work there.", mapping.repo);
+        }
+        let local = prr::config::expand_tilde(local_path);
+        if !local.join(".git").exists() {
+            anyhow::bail!("{} is not a git checkout. Check your local copy's folder in Settings → Projects.", local.display());
+        }
+        let base = mapping.branch.trim().trim_start_matches("refs/heads/").to_string();
+        let branch = branch_name(id, &record.title).trim_start_matches("warden/").to_string();
+        let work = local.join(".claude").join("worktrees").join(&branch);
+        let pat = prr::auth::get_pat()?;
+        let (paths, all) = (mapping.copy_paths.clone(), mapping.copy_local_only);
+        let result = work.clone();
+        blocking(move || {
+            git::exclude_locally(&local, "/.claude/worktrees/")?;
+            if !work.exists() {
+                git::fetch(&local, &base, &base, Some(&GitAuth::from_pat(&pat)))?;
+                git::worktree_add_branch(&local, &work, &branch, &format!("origin/{base}"))?;
+                let mut paths = paths;
+                if all {
+                    paths.extend(git::local_only_files(&local)?);
+                }
+                paths.sort();
+                paths.dedup();
+                copy_local_files(&local, &work, &paths)?;
+                git::protect_local_changes(&work)?;
+            }
+            Ok(())
+        })
+        .await?;
+        Ok(result)
     }
 
     /// Queues Claude to address the open comments on the pull request a fix opened.
@@ -1457,8 +1508,8 @@ mod tests {
     #[test]
     fn the_feedback_prompt_lists_each_open_comment() {
         let threads = vec![
-            PrThread { id: 1, file: Some("src/a.cs".into()), line: Some(12), comments: vec![("Ann".into(), "Rename this.".into()), ("Bob".into(), "Agreed".into())] },
-            PrThread { id: 2, file: None, line: None, comments: vec![("Warden".into(), "Add a test for empty names.".into())] },
+            PrThread { id: 1, file: Some("src/a.cs".into()), line: Some(12), comments: vec![("Ann".into(), "Rename this.".into()), ("Bob".into(), "Agreed".into())], first_author_id: String::new() },
+            PrThread { id: 2, file: None, line: None, comments: vec![("Warden".into(), "Add a test for empty names.".into())], first_author_id: String::new() },
         ];
         let p = feedback_prompt(&item(), 812, "warden/4102-x", "dev", &threads, &[]);
         assert!(p.contains("pull request 812"));

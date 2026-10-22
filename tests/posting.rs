@@ -618,3 +618,28 @@ async fn board_items_are_found_read_tagged_and_commented() {
     c.set_work_item_tags(12, &["ui".into(), "warden-needs-human".into()]).await.unwrap();
     assert!(c.work_item_web_url(12).ends_with("/org/proj/_workitems/edit/12"));
 }
+
+#[tokio::test]
+async fn a_review_thread_is_replied_to_and_resolved() {
+    use wiremock::matchers::body_json;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/org/proj/_apis/git/repositories/r1/pullRequests/7/threads/42/comments"))
+        .and(body_json(json!({ "content": "**Approved anyway** by Ann: fine", "parentCommentId": 1, "commentType": 1 })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": 2 })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/org/proj/_apis/git/repositories/r1/pullRequests/7/threads/42"))
+        .and(body_json(json!({ "status": "fixed" })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": 42 })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let c = client(&server);
+    c.reply_to_thread("r1", 7, 42, "**Approved anyway** by Ann: fine").await.unwrap();
+    c.set_thread_status("r1", 7, 42, "fixed").await.unwrap();
+}

@@ -334,6 +334,8 @@ pub struct PrThread {
     pub line: Option<u32>,
     /// Author and text of each comment, oldest first.
     pub comments: Vec<(String, String)>,
+    /// Who started the thread (the first comment's author id).
+    pub first_author_id: String,
 }
 
 /// The threads still open (active or pending) with at least one comment from a person.
@@ -361,7 +363,14 @@ pub fn open_threads_from(threads: &[Value]) -> Vec<PrThread> {
                 return None;
             }
             let ctx = &t["threadContext"];
+            let first_author_id = t["comments"]
+                .as_array()
+                .and_then(|c| c.first())
+                .and_then(|c| c["author"]["id"].as_str())
+                .unwrap_or("")
+                .to_string();
             Some(PrThread {
+                first_author_id,
                 id: t["id"].as_u64().unwrap_or(0),
                 file: ctx["filePath"].as_str().map(|f| f.trim_start_matches('/').to_string()),
                 line: ctx["rightFileStart"]["line"].as_u64().map(|l| l as u32),
@@ -1016,6 +1025,29 @@ impl AdoClient {
         Ok(open_threads_from(&resp.value))
     }
 
+    /// Replies to a comment thread on a pull request.
+    pub async fn reply_to_thread(&self, repo_id: &str, pr_id: u64, thread_id: u64, content: &str) -> Result<()> {
+        let url = format!("{}/{thread_id}/comments", self.threads_url(repo_id, pr_id));
+        let _: Value = self
+            .send(
+                self.http
+                    .post(url)
+                    .query(&[("api-version", API_VERSION)])
+                    .json(&json!({ "content": content, "parentCommentId": 1, "commentType": 1 })),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Sets a comment thread's status: `active`, `fixed` (resolved), `closed`…
+    pub async fn set_thread_status(&self, repo_id: &str, pr_id: u64, thread_id: u64, status: &str) -> Result<()> {
+        let url = format!("{}/{thread_id}", self.threads_url(repo_id, pr_id));
+        let _: Value = self
+            .send(self.http.patch(url).query(&[("api-version", API_VERSION)]).json(&json!({ "status": status })))
+            .await?;
+        Ok(())
+    }
+
     pub async fn post_thread(&self, repo_id: &str, pr_id: u64, body: &Value) -> Result<u64> {
         let resp: Value = self
             .send(
@@ -1050,7 +1082,7 @@ mod tests {
     #[test]
     fn only_open_threads_with_comments_from_people_are_kept() {
         let threads = json!([
-            { "id": 1, "status": "active", "comments": [{ "content": "Rename this.", "commentType": "text", "author": { "displayName": "Ann" } }],
+            { "id": 1, "status": "active", "comments": [{ "content": "Rename this.", "commentType": "text", "author": { "displayName": "Ann", "id": "u-ann" } }],
               "threadContext": { "filePath": "/src/a.cs", "rightFileStart": { "line": 12, "offset": 1 } } },
             { "id": 2, "status": "fixed", "comments": [{ "content": "Done already", "commentType": "text", "author": { "displayName": "Ann" } }] },
             { "id": 3, "comments": [{ "content": "Ann voted -10", "commentType": "system", "author": { "displayName": "Ann" } }] },
@@ -1062,6 +1094,7 @@ mod tests {
         assert_eq!(open.iter().map(|t| t.id).collect::<Vec<_>>(), [1, 5]);
         assert_eq!(open[0].file.as_deref(), Some("src/a.cs"));
         assert_eq!(open[0].line, Some(12));
+        assert_eq!(open[0].first_author_id, "u-ann");
         assert_eq!(open[0].comments, vec![("Ann".to_string(), "Rename this.".to_string())]);
         assert_eq!(open[1].comments.len(), 1);
     }

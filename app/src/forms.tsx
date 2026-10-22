@@ -712,6 +712,8 @@ export function SettingsView({ settings, change, onRunSetup, offer, onCheck }: {
               </div>
               <SwitchRow title="Notifications" on={settings.notifications} onChange={(notifications) => change({ notifications })}
                 help="Show a system notification when a review starts and finishes, when fixes finish or pull requests are approved, and when an update is available." />
+              <SwitchRow title="Keep the computer awake" on={!!settings.keepAwake} onChange={(keepAwake) => change({ keepAwake })}
+                help="Stops the computer going to sleep when idle while Warden is running, so reviews, triage and fixes carry on while you are away. The screen can still turn off and lock; closing a laptop's lid still puts it to sleep." />
             </div>
           </section>
           <section className="setting-group">
@@ -750,6 +752,8 @@ export function SettingsView({ settings, change, onRunSetup, offer, onCheck }: {
                 effort={settings.reviewEffort ?? ""} onEffort={(reviewEffort) => change({ reviewEffort })}
                 help="Reviews run once per push and catch security problems, so they are worth the strongest model." />
               <SwitchRow title="Tag the author in the comment" on={settings.mentionAuthor} onChange={(mentionAuthor) => change({ mentionAuthor })} />
+              <SwitchRow title="Don't review pull requests again once approved" on={!!settings.skipApproved} onChange={(skipApproved) => change({ skipApproved })}
+                help="When new commits are pushed to a pull request that is already approved (by Warden, by Approve anyway, or with your approval vote), it is not reviewed again. Useful when a build fails after approval and is fixed. Pull requests that were rejected are still reviewed when fixed." />
               <SwitchRow title="Also review pull requests that were already open" on={settings.reviewExisting} onChange={(reviewExisting) => change({ reviewExisting })}
                 help="Off: only pull requests opened after monitoring started are reviewed." />
             </div>
