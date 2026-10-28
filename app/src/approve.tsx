@@ -3,8 +3,10 @@ import { api } from "./api";
 
 /** "Approve anyway" for a pull request that failed review: the user gives a reason, which is posted
  *  as a reply on Warden's review comment (resolving it), then the PR is approved and set to auto-complete. */
-export function ApproveAnyway({ prId, project, compact = false, onDone }: {
-  prId: number; project: string; compact?: boolean; onDone?: () => void;
+export function ApproveAnyway({ prId, project, compact = false, inline = false, onDone }: {
+  prId: number; project: string; compact?: boolean;
+  /** A reason field and button on one line, always shown. */
+  inline?: boolean; onDone?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState("");
@@ -21,6 +23,22 @@ export function ApproveAnyway({ prId, project, compact = false, onDone }: {
     );
   };
 
+  if (inline) {
+    return (
+      <div className="stack" style={{ gap: 6, alignItems: "stretch" }}>
+        <div className="approve-anyway inline-form">
+          <input className="input" value={reason} spellCheck placeholder="Reason, e.g. the flagged query only runs in the nightly export"
+            aria-label="Why it is fine to approve it" onChange={(e) => setReason(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") submit(); }} />
+          <button className="btn" disabled={busy || !ready} onClick={submit}
+            title="Posted on the pull request as a reply to Warden's review comment, which is then resolved; the pull request is approved in your name and set to auto-complete">
+            {busy ? "Approving…" : "Approve anyway"}
+          </button>
+        </div>
+        {error && <span className="tone-critical selectable" role="alert">{error}</span>}
+      </div>
+    );
+  }
   if (!open) {
     return (
       <button className="btn" onClick={() => setOpen(true)}

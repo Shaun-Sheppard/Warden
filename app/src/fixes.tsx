@@ -65,7 +65,7 @@ const STATUS: Record<Fix["status"], { label: string; tone: string }> = {
   failed: { label: "Failed", tone: "critical" },
 };
 
-function FixCard({ fix, now }: { fix: Fix; now: number }) {
+export function FixCard({ fix, now }: { fix: Fix; now: number }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);

@@ -1,7 +1,8 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { api, type AvailableUpdate } from "./api";
-import type { AreaMapping, ClaudeStatus, ProjectConfig, ProjectStructure, Settings, TriageChoices } from "./types";
+import type { AreaMapping, AutoFixScope, ClaudeStatus, ProjectConfig, ProjectStructure, Settings, TriageChoices } from "./types";
 import { Segmented, SwitchRow, TagInput } from "./ui";
+import { avatarColor } from "./util";
 
 type Change = (patch: Partial<Settings>) => void;
 
@@ -447,15 +448,16 @@ function ProjectApprove({ on, onChange }: { on: boolean; onChange: (on: boolean)
 }
 
 /** A short summary of what Warden does for a project. */
-function projectSummary(c: ProjectConfig) {
+function projectSummary(c: ProjectConfig, triageOn: boolean) {
   const review = c.review ? `Reviews ${c.people.length ? `PRs by ${c.people.length} ${c.people.length === 1 ? "person" : "people"}` : "every PR"}${c.approveAndComplete ? ", votes and completes" : ""}` : "PR review off";
-  const triage = c.triage ? `triages${c.autoFix ? " and fixes automatically" : ""}, ${c.areas.length} area${c.areas.length === 1 ? "" : "s"}` : "triage off";
-  return `${review} · ${triage}`;
+  const fixes = { none: "", quick: " and fixes quick items", standard: " and fixes quick and standard items" }[c.autoFixScope ?? "none"];
+  const triage = c.triage ? `triages${fixes}, ${c.areas.length} area${c.areas.length === 1 ? "" : "s"}` : "triage off";
+  return triageOn ? `${review} · ${triage}` : review;
 }
 
 /** Everything for one project in one place: its pull request reviews, its board triage and its areas. */
-function ProjectCard({ config: c, organization, open, onToggle, onChange, onRemove }: {
-  config: ProjectConfig; organization: string; open: boolean; onToggle: () => void;
+function ProjectCard({ config: c, organization, open, triageOn, onToggle, onChange, onRemove }: {
+  config: ProjectConfig; organization: string; open: boolean; triageOn: boolean; onToggle: () => void;
   onChange: (patch: Partial<ProjectConfig>) => void; onRemove: () => void;
 }) {
   const [people, setPeople] = useState<string[]>([]);
@@ -475,15 +477,18 @@ function ProjectCard({ config: c, organization, open, onToggle, onChange, onRemo
       <div className="map-head">
         <button className="map-toggle" onClick={onToggle} aria-expanded={open}>
           <span className={`chev ${open ? "open" : ""}`}>›</span>
+          <span className="inline" style={{ gap: 12, minWidth: 0 }}>
+          <span className="project-initial" style={{ width: 32, height: 32, borderRadius: 10, fontSize: 14, background: `color-mix(in oklab, oklch(0.6 0.15 ${avatarColor(c.name)}) 16%, var(--panel))`, color: `oklch(0.58 0.16 ${avatarColor(c.name)})` }} aria-hidden>{c.name.trim()[0]?.toUpperCase()}</span>
           <span className="stack" style={{ gap: 4, minWidth: 0 }}>
             <span className="map-title"><b style={{ fontSize: 15 }}>{c.name}</b></span>
-            <span className="help">{projectSummary(c)}</span>
+            <span className="help">{projectSummary(c, triageOn)}</span>
+          </span>
           </span>
         </button>
         <span className="pills">
           {c.review && <span className="tpill tpill-purple">PR review</span>}
-          {c.triage && <span className={`tpill ${incomplete ? "tpill-major" : "tpill-ok"}`}>{incomplete ? "Triage · finish setup" : "Triage"}</span>}
-          {!c.review && !c.triage && <span className="tpill tpill-neutral">Off</span>}
+          {c.triage && triageOn && <span className={`tpill ${incomplete ? "tpill-major" : "tpill-ok"}`}>{incomplete ? "Triage · finish setup" : "Triage"}</span>}
+          {!c.review && !(c.triage && triageOn) && <span className="tpill tpill-neutral">Off</span>}
         </span>
         <button className="map-remove" aria-label={`Remove ${c.name}`} title="Remove project" onClick={() => setRemoving(true)}>×</button>
       </div>
@@ -520,14 +525,24 @@ function ProjectCard({ config: c, organization, open, onToggle, onChange, onRemo
             )}
           </div>
 
-          <div className="map-section">
+          {triageOn && <div className="map-section">
             <span className="eyebrow">Board triage</span>
             <SwitchRow title="Triage my work items" on={c.triage} onChange={(triage) => onChange({ triage })}
               help="Each check, Warden reads the work items assigned to you here in a to-do state and rates their risk and whether an AI agent could fix them." />
             {c.triage && (
               <>
-                <SwitchRow title="Fix automatically" on={c.autoFix} onChange={(autoFix) => onChange({ autoFix })}
-                  help="Fix items triage marks as safe for an AI agent without asking. Claude fixes, adds tests and runs the build and tests; only if they pass does Warden push and open a pull request. Off: use “Fix with Claude” on the Triage page." />
+                <div className="switch-row">
+                  <div className="stack">
+                    <span className="label">Fix automatically</span>
+                    <span className="help">Which items Claude fixes without asking. It fixes, adds tests and runs the build and tests; only if they pass does Warden push and open a pull request. Complex items are never fixed automatically; “Fix with AI” on the Triage page fixes any quick or standard item.</span>
+                  </div>
+                  <select className="input model-select" style={{ width: 220 }} value={c.autoFixScope ?? "none"} aria-label={`Which items are fixed automatically in ${c.name}`}
+                    onChange={(e) => onChange({ autoFixScope: e.target.value as AutoFixScope })}>
+                    <option value="none">None</option>
+                    <option value="quick">Quick fixes only</option>
+                    <option value="standard">Quick and standard fixes</option>
+                  </select>
+                </div>
                 <SwitchRow title="Current sprint only" on={c.currentSprint} onChange={(currentSprint) => onChange({ currentSprint })}
                   help="Only items in the project's current sprint. Items in later sprints or the backlog wait until their sprint starts." />
                 <SwitchRow title="Tag and comment on items" on={c.postResults} onChange={(postResults) => onChange({ postResults })}
@@ -549,7 +564,7 @@ function ProjectCard({ config: c, organization, open, onToggle, onChange, onRemo
                 <AreaMappings project={c.name} areas={c.areas} onChange={(areas) => onChange({ areas })} />
               </>
             )}
-          </div>
+          </div>}
         </>
       )}
     </div>
@@ -557,7 +572,7 @@ function ProjectCard({ config: c, organization, open, onToggle, onChange, onRemo
 }
 
 /** Every project Warden works with, each configured on its own. */
-function ProjectsSettings({ settings, change }: { settings: Settings; change: Change }) {
+function ProjectsSettings({ settings, change, triageOn }: { settings: Settings; change: Change; triageOn: boolean }) {
   const configs = settings.projectConfigs ?? [];
   const [available, setAvailable] = useState<string[]>([]);
   const [adding, setAdding] = useState("");
@@ -575,7 +590,7 @@ function ProjectsSettings({ settings, change }: { settings: Settings; change: Ch
     change({
       projectConfigs: [...configs, {
         name: exact, review: true, people: [], approveAndComplete: false, mergeStrategy: "noFastForward", deleteSourceBranch: false,
-        triage: false, autoFix: false, currentSprint: true, postResults: false, states: ["To Do", "New"], types: ["Bug"], areas: [],
+        triage: false, autoFix: false, autoFixScope: "none", currentSprint: true, postResults: false, states: ["To Do", "New"], types: ["Bug"], areas: [],
       }],
     });
     setOpened(new Set([exact]));
@@ -586,7 +601,7 @@ function ProjectsSettings({ settings, change }: { settings: Settings; change: Ch
     <div className="map-list">
       {configs.length === 0 && <div className="note-box"><b>No projects yet</b><p>Add a project to review its pull requests or triage its board.</p></div>}
       {configs.map((c) => (
-        <ProjectCard key={c.name} config={c} organization={settings.organization} open={opened.has(c.name)}
+        <ProjectCard key={c.name} config={c} organization={settings.organization} open={opened.has(c.name)} triageOn={triageOn}
           onToggle={() => setOpened((o) => { const next = new Set(o); if (!next.delete(c.name)) next.add(c.name); return next; })}
           onChange={(patch) => set(c.name, patch)}
           onRemove={() => change({ projectConfigs: configs.filter((x) => x.name !== c.name) })} />
@@ -636,45 +651,6 @@ function ModelSetting({ title, help, value, onChange, effort, onEffort }: {
   );
 }
 
-/** A model on this computer that screens items before Claude: those it is sure need a person skip Claude's triage. */
-function LocalPretriage({ settings, change }: { settings: Settings; change: Change }) {
-  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
-  const [testing, setTesting] = useState(false);
-  const on = !!settings.localPretriage;
-  const test = () => {
-    setTesting(true);
-    setResult(null);
-    api.testLocalModel(settings.localUrl ?? "", settings.localModel ?? "")
-      .then((text) => setResult({ ok: true, text }), (e) => setResult({ ok: false, text: String(e) }))
-      .finally(() => setTesting(false));
-  };
-  return (
-    <div className="fields">
-      <SwitchRow title="Screen items with a local model first" on={on} onChange={(localPretriage) => change({ localPretriage })}
-        help="A model running on this computer (through Ollama) reads each item's text, without its code, and picks out the ones that clearly need a person. Those skip Claude's triage and are marked “Screened locally”; everything else, and anything it is unsure about, goes to Claude as usual." />
-      {on && (
-        <>
-          <div className="map-grid">
-            <label className="field"><span>Ollama address</span>
-              <input className="input mono" value={settings.localUrl ?? ""} placeholder="http://localhost:11434" onChange={(e) => change({ localUrl: e.target.value.trim() })} />
-            </label>
-            <label className="field"><span>Model</span>
-              <input className="input mono" value={settings.localModel ?? ""} placeholder="gpt-oss:20b" onChange={(e) => change({ localModel: e.target.value.trim() })} />
-            </label>
-          </div>
-          <SwitchRow title="Use the local model for all triage" on={!!settings.localTriageOnly} onChange={(localTriageOnly) => change({ localTriageOnly })}
-            help="Claude is not used for triage at all: the local model rates every item, from its text alone (it cannot read the code). Faster and free, but less informed. Fixes still use Claude." />
-          <div className="inline">
-            <button className="btn" disabled={testing || !(settings.localModel ?? "").trim()} onClick={test}>{testing ? "Asking the model…" : "Test the model"}</button>
-            {result && <span className={`help ${result.ok ? "tone-ok" : "tone-critical"}`}>{result.text}</span>}
-          </div>
-          <span className="help">The item's text, its parent and its comments are sent to this address; keep it on this computer. Use “Triage again” on an item to have Claude look at it instead.</span>
-        </>
-      )}
-    </div>
-  );
-}
-
 type SettingsTab = "general" | "review" | "triage" | "projects";
 const SETTINGS_TABS: { key: SettingsTab; label: string }[] = [
   { key: "general", label: "General" }, { key: "review", label: "PR review" }, { key: "triage", label: "Triage" }, { key: "projects", label: "Projects" },
@@ -684,6 +660,7 @@ export function SettingsView({ settings, change, onRunSetup, offer, onCheck }: {
   settings: Settings; change: Change; onRunSetup: () => void; offer: UpdateOffer; onCheck: () => Promise<AvailableUpdate | null>;
 }) {
   const [claude, recheck] = useClaudeStatus(settings.cliPath);
+  const triageOn = settings.triageOn ?? (settings.projectConfigs ?? []).some((c) => c.triage);
   const [tab, setTabState] = useState<SettingsTab>(() => {
     try { return (localStorage.getItem("warden.settings.tab") as SettingsTab) || "general"; } catch { return "general"; }
   });
@@ -768,6 +745,18 @@ export function SettingsView({ settings, change, onRunSetup, offer, onCheck }: {
       )}
 
       {tab === "triage" && (
+        <section className="setting-group">
+          <div><h2>Triage</h2><span className="help">Rate the work items assigned to you, and fix the easy ones with Claude.</span></div>
+          <div className="fields">
+            <SwitchRow title="Triage my boards" on={triageOn} onChange={(on) => change({ triageOn: on })}
+              help={triageOn
+                ? "Each check, Warden reads the work items assigned to you in the projects set to triage under Projects, rates them, and can fix them. Off hides triage everywhere and stops it; what was triaged is kept."
+                : "Off: Warden does not read your boards, and triage is hidden from the sidebar and Projects. Turn it on to choose which projects are triaged and how items are fixed."} />
+          </div>
+        </section>
+      )}
+
+      {tab === "triage" && triageOn && (
         <>
           <section className="setting-group">
             <div><h2>Board triage</h2><span className="help">For every project. Which projects are triaged, which items count and where their code lives are set per project under Projects.</span></div>
@@ -780,23 +769,22 @@ export function SettingsView({ settings, change, onRunSetup, offer, onCheck }: {
               <ModelSetting title="Triage model" value={settings.triageModel ?? ""} onChange={(triageModel) => change({ triageModel })}
                 effort={settings.triageEffort ?? ""} onEffort={(triageEffort) => change({ triageEffort })}
                 help="Rates every item on your boards, so a lighter model saves the most here." />
-              <ModelSetting title="Model for simple fixes" value={settings.fixModelSimple ?? ""} onChange={(fixModelSimple) => change({ fixModelSimple })}
+              <ModelSetting title="Model for quick fixes" value={settings.fixModelSimple ?? ""} onChange={(fixModelSimple) => change({ fixModelSimple })}
                 effort={settings.fixEffortSimple ?? ""} onEffort={(fixEffortSimple) => change({ fixEffortSimple })}
-                help="Fixes triage rates simple: a small, local change in one or two files." />
+                help="Trivial changes with an obvious fix: a typo, a label, a missing check." />
+              <ModelSetting title="Model for standard fixes" value={settings.fixModelStandard ?? ""} onChange={(fixModelStandard) => change({ fixModelStandard })}
+                effort={settings.fixEffortStandard ?? ""} onEffort={(fixEffortStandard) => change({ fixEffortStandard })}
+                help="Ordinary bug fixes in a few files that need some investigation." />
               <ModelSetting title="Model for complex fixes" value={settings.fixModelComplex ?? ""} onChange={(fixModelComplex) => change({ fixModelComplex })}
                 effort={settings.fixEffortComplex ?? ""} onEffort={(fixEffortComplex) => change({ fixEffortComplex })}
-                help="Fixes triage rates complex, items that came back after an earlier fix, and items fixed anyway." />
-              <SwitchRow title="Try a failed simple fix again with the complex model" on={settings.fixEscalate ?? true} onChange={(fixEscalate) => change({ fixEscalate })}
-                help="If a simple fix cannot get the tests to pass, it gets one more go on the complex model, building on what the first attempt did." />
+                help="Used when a standard fix came back after an earlier fix, or is tried again after failing. Complex items are left for you to fix." />
+              <SwitchRow title="Try a failed fix again with the next level's model" on={settings.fixEscalate ?? true} onChange={(fixEscalate) => change({ fixEscalate })}
+                help="If a fix cannot get the tests to pass, it gets one more go on the next level up (quick → standard → complex), building on what the first attempt did." />
               <span className="help">Higher effort means Claude thinks for longer before answering: better on hard problems, but slower. Stronger models and higher effort use a Claude subscription's limits faster; if a limit is reached, Warden pauses rather than failing items.</span>
               <SwitchRow title="Triage dry run" on={settings.triageDryRun} onChange={(triageDryRun) => change({ triageDryRun })}
                 help="Nothing goes to Azure DevOps: items are not tagged or commented on, and fixes are tested but never committed, pushed or opened as pull requests. Separate from the pull request dry run." />
               <span className="help">Needs your token to have Work Items (Read &amp; Write). Pause everything from the button in the sidebar's monitoring box.</span>
             </div>
-          </section>
-          <section className="setting-group">
-            <div><h2>Local pre-triage</h2><span className="help">Optional. Let a model on this computer sort out the obvious “needs a person” items before Claude looks at the rest.</span></div>
-            <LocalPretriage settings={settings} change={change} />
           </section>
           <section className="setting-group">
             <div><h2>Triage prompt</h2><span className="help">How Claude rates each work item.</span></div>
@@ -807,10 +795,28 @@ export function SettingsView({ settings, change, onRunSetup, offer, onCheck }: {
         </>
       )}
 
+      {tab === "triage" && triageOn && (
+        <section className="setting-group">
+          <div><h2>Fix prompt</h2><span className="help">How Claude goes about fixing an item, automatically or with “Fix with AI”.</span></div>
+          <PromptSetting value={settings.fixPrompt ?? ""} onSave={(fixPrompt) => change({ fixPrompt })} loadDefault={api.defaultFixPrompt}
+            help={<>Warden always adds the work item with its comments and parent, the triage notes, your notes, how to build and run the tests, and the report format.
+              It also keeps Claude inside the item's checkout, with no git and no weakening tests. The fix is committed and a pull request opened only if the tests pass.</>} />
+        </section>
+      )}
+
+      {tab === "triage" && triageOn && (
+        <section className="setting-group">
+          <div><h2>Batch fix prompt</h2><span className="help">How Claude goes about several items picked on the board and fixed together.</span></div>
+          <PromptSetting value={settings.batchPrompt ?? ""} onSave={(batchPrompt) => change({ batchPrompt })} loadDefault={api.defaultBatchPrompt}
+            help={<>Used instead of the fix prompt when you pick items with their tick boxes and choose “Batch fix”. Items in the same repository and branch
+              are fixed in one change, with one pull request linked to all of them; Warden adds every item, the same rules and the test run as for one.</>} />
+        </section>
+      )}
+
       {tab === "projects" && (
         <section className="setting-group">
           <div><h2>Projects</h2><span className="help">Each project is set up on its own: whether its pull requests are reviewed and how, and whether its board is triaged and where its code lives.</span></div>
-          <div className="bare"><ProjectsSettings settings={settings} change={change} /></div>
+          <div className="bare"><ProjectsSettings settings={settings} change={change} triageOn={triageOn} /></div>
         </section>
       )}
     </div>

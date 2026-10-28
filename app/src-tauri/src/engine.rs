@@ -19,8 +19,7 @@ use crate::model::*;
 use crate::store::Store;
 
 mod fixes;
-mod item_fixes;
-pub mod local;
+pub mod item_fixes;
 pub mod triage;
 
 /// A PR whose review keeps failing is left alone after this many attempts.
@@ -1389,8 +1388,8 @@ mod tests {
         settings.normalise();
         for c in &settings.project_configs {
             println!(
-                "{} | review {} people {:?} vote {} merge {} delete {} | triage {} auto {} sprint {} post {} states {:?} types {:?} | areas {:?}",
-                c.name, c.review, c.people, c.approve_and_complete, c.merge_strategy, c.delete_source_branch, c.triage, c.auto_fix,
+                "{} | review {} people {:?} vote {} merge {} delete {} | triage {} auto {:?} sprint {} post {} states {:?} types {:?} | areas {:?}",
+                c.name, c.review, c.people, c.approve_and_complete, c.merge_strategy, c.delete_source_branch, c.triage, c.auto_fix_scope,
                 c.current_sprint, c.post_results, c.states, c.types,
                 c.areas.iter().map(|a| format!("{} -> {} @ {} (local {}, all {})", a.area_path, a.repo, a.branch, a.local_path, a.copy_local_only)).collect::<Vec<_>>()
             );
@@ -1414,7 +1413,10 @@ mod tests {
         let names: Vec<&str> = settings.project_configs.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["Clinic", "Acme"]);
         let sg = settings.project("acme").unwrap();
-        assert!(sg.review && sg.triage && sg.auto_fix && sg.approve_and_complete && sg.delete_source_branch);
+        assert!(sg.review && sg.triage && sg.approve_and_complete && sg.delete_source_branch);
+        // Its old "Fix automatically" switch becomes the per-project choice.
+        assert_eq!(sg.auto_fix_scope.as_deref(), Some("quick"));
+        assert!(!sg.auto_fix);
         assert_eq!(sg.merge_strategy, "squash");
         assert_eq!(sg.people, ["Shaun Sheppard"]);
         assert_eq!(sg.types, ["Bug", "Story Bug"]);
@@ -1429,6 +1431,13 @@ mod tests {
         settings.normalise();
         assert_eq!(settings, again);
 
+        // Settings from before the main switch keep triage on if a project was triaged.
+        assert_eq!(settings.triage_on, Some(true));
+        // The main switch turns it off whatever the projects say.
+        settings.triage_on = Some(false);
+        settings.normalise();
+        assert!(!settings.triage_enabled);
+        settings.triage_on = Some(true);
         // Triage off for every project means triage is off.
         settings.project_configs.iter_mut().for_each(|c| c.triage = false);
         settings.normalise();

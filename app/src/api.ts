@@ -20,11 +20,14 @@ export interface Api {
   getTriage(): Promise<TriageState>;
   triageAgain(id: number): Promise<void>;
   fixWorkItem(id: number, notes?: string): Promise<void>;
+  /** Fixes items together: one branch and pull request per repository. Returns how many fixes were queued. */
+  batchFix(ids: number[], notes?: string): Promise<number>;
+  defaultBatchPrompt(): Promise<string>;
   addressPrFeedback(id: number): Promise<void>;
   retryFailedFixes(): Promise<number>;
-  setRecommendation(id: number, ai: boolean): Promise<void>;
-  setComplexity(id: number, complex: boolean): Promise<void>;
-  testLocalModel(url: string, model: string): Promise<string>;
+  /** Puts an item in the Quick, Standard or Complex fix column. */
+  setLevel(id: number, level: "quick" | "standard" | "complex"): Promise<void>;
+  defaultFixPrompt(): Promise<string>;
   forgetItem(id: number): Promise<void>;
   listProjects(): Promise<string[]>;
   fixDiff(id: number): Promise<string>;
@@ -92,11 +95,12 @@ const tauriApi: Api = {
   getTriage: () => invoke("get_triage"),
   triageAgain: (id) => invoke("triage_again", { id }),
   fixWorkItem: (id, notes) => invoke("fix_work_item", { id, notes: notes ?? null }),
+  batchFix: (ids, notes) => invoke("batch_fix", { ids, notes: notes ?? "" }),
+  defaultBatchPrompt: () => invoke("default_batch_prompt"),
   addressPrFeedback: (id) => invoke("address_pr_feedback", { id }),
   retryFailedFixes: () => invoke("retry_failed_fixes"),
-  setRecommendation: (id, ai) => invoke("set_recommendation", { id, ai }),
-  setComplexity: (id, complex) => invoke("set_complexity", { id, complex }),
-  testLocalModel: (url, model) => invoke("test_local_model", { url, model }),
+  setLevel: (id, level) => invoke("set_level", { id, level }),
+  defaultFixPrompt: () => invoke("default_fix_prompt"),
   forgetItem: (id) => invoke("forget_item", { id }),
   listProjects: () => invoke("list_projects"),
   itemComments: (id) => invoke("item_comments", { id }),

@@ -216,12 +216,6 @@ async fn retry_failed_fixes(engine: Shared<'_>) -> Result<usize, String> {
     engine.retry_failed_fixes().map_err(err)
 }
 
-/// Moves a triaged item to "AI can fix" (`ai`) or "For a person".
-#[tauri::command]
-async fn set_recommendation(engine: Shared<'_>, id: u64, ai: bool) -> Result<(), String> {
-    engine.set_recommendation(id, ai).map_err(err)
-}
-
 /// Starts a Claude Code session for an item: a worktree in the user's checkout from the
 /// latest base branch, then the Claude desktop app opened there with `/fix <id>` ready.
 #[tauri::command]
@@ -243,23 +237,28 @@ async fn approve_anyway(engine: Shared<'_>, pr_id: u64, project: String, reason:
     engine.approve_anyway(pr_id, &project, &reason).await.map_err(err)
 }
 
-/// Checks the local model answers, and how quickly.
+/// Fixes several items together: one branch and pull request per repository.
 #[tauri::command]
-async fn test_local_model(url: String, model: String) -> Result<String, String> {
-    let started = std::time::Instant::now();
-    let reply = engine::local::ask(&url, &model, "Reply with only this JSON: {\"ok\": true}", std::time::Duration::from_secs(120))
-        .await
-        .map_err(err)?;
-    if !reply.contains("ok") {
-        return Err(format!("The model answered, but not as asked: {}", reply.chars().take(120).collect::<String>()));
-    }
-    Ok(format!("{model} answered in {:.1}s", started.elapsed().as_secs_f64()))
+async fn batch_fix(engine: Shared<'_>, ids: Vec<u64>, notes: String) -> Result<usize, String> {
+    engine.batch_fix(&ids, &notes).map_err(err)
 }
 
-/// Sets whether an item's fix is simple or complex, which picks its model.
-#[tauri::command(async)]
-fn set_complexity(engine: Shared, id: u64, complex: bool) -> Result<(), String> {
-    engine.set_complexity(id, complex).map_err(err)
+/// The built-in batch fix instructions.
+#[tauri::command]
+fn default_batch_prompt() -> &'static str {
+    engine::item_fixes::DEFAULT_BATCH_GUIDANCE
+}
+
+/// Puts an item in the Quick, Standard or Complex fix column.
+#[tauri::command]
+async fn set_level(engine: Shared<'_>, id: u64, level: String) -> Result<(), String> {
+    engine.set_level(id, &level).map_err(err)
+}
+
+/// The built-in fix instructions, shown as the starting point for a custom fix prompt.
+#[tauri::command]
+fn default_fix_prompt() -> &'static str {
+    engine::item_fixes::DEFAULT_FIX_GUIDANCE
 }
 
 /// Forgets a triage item; the next check adds it back if it still qualifies.
@@ -611,10 +610,11 @@ fn main() {
             fix_work_item,
             address_pr_feedback,
             retry_failed_fixes,
-            set_recommendation,
             forget_item,
-            set_complexity,
-            test_local_model,
+            set_level,
+            batch_fix,
+            default_batch_prompt,
+            default_fix_prompt,
             approve_anyway,
             new_session,
             list_projects,

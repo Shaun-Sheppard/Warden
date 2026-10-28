@@ -1,33 +1,28 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "./api";
 import { ApproveAnyway } from "./approve";
+import { Checkbox, Notice, PageHeader, SearchBox } from "./ui";
 import { DiffView } from "./fixes";
 import type { ItemFix, TriageRecord, TriageState } from "./types";
 import { ago } from "./util";
 
 /** Where an item sits on the board. */
-type Column = "triage" | "ai" | "person" | "fixing" | "review" | "failedReview" | "fixed";
-type Tab = "all" | "ai" | "person" | "triage" | "prs";
+type Column = "triage" | Level | "review" | "failedReview" | "fixed";
+type Level = "quick" | "standard" | "complex";
 type View = "list" | "board";
 
 const COLUMNS: Record<Column, { label: string; desc: string; empty: string }> = {
   triage: { label: "To triage", desc: "Not yet sorted", empty: "Nothing to triage" },
-  ai: { label: "AI can fix", desc: "Ready for Claude", empty: "Nothing here" },
-  person: { label: "For a person", desc: "Needs a human", empty: "Nothing here" },
-  fixing: { label: "Fixing", desc: "Claude, or you, working on these now", empty: "Nothing being fixed" },
+  quick: { label: "Quick fix", desc: "Small and obvious; AI can fix", empty: "Nothing here" },
+  standard: { label: "Standard fix", desc: "Needs some digging; AI can fix", empty: "Nothing here" },
+  complex: { label: "Complex fix", desc: "For you to fix", empty: "Nothing here" },
   review: { label: "In review", desc: "Pull request waiting for approval", empty: "No pull requests in review" },
   failedReview: { label: "Failed review", desc: "Pull request sent back", empty: "Nothing sent back" },
-  fixed: { label: "Fixed", desc: "Pull request approved", empty: "Nothing approved yet" },
+  fixed: { label: "Fixed today", desc: "Pull request approved today", empty: "Nothing approved today" },
 };
-const BOARD: Column[] = ["triage", "ai", "person", "fixing", "review", "failedReview", "fixed"];
-const LIST: Column[] = ["fixing", "failedReview", "review", "triage", "ai", "person", "fixed"];
-const TABS: { key: Tab; label: string; columns: Column[] }[] = [
-  { key: "all", label: "All", columns: LIST },
-  { key: "ai", label: "AI can fix", columns: ["fixing", "ai"] },
-  { key: "person", label: "For a person", columns: ["person"] },
-  { key: "triage", label: "To triage", columns: ["triage"] },
-  { key: "prs", label: "Pull requests", columns: ["failedReview", "review", "fixed"] },
-];
+const LEVELS: Level[] = ["quick", "standard", "complex"];
+const BOARD: Column[] = ["triage", ...LEVELS, "review", "failedReview", "fixed"];
+const LIST: Column[] = ["failedReview", "review", "triage", ...LEVELS, "fixed"];
 
 /** Cards shown per board column before "Show all". */
 const COLUMN_LIMIT = 50;
@@ -35,22 +30,32 @@ const COLUMN_LIMIT = 50;
 const RUNNING: ItemFix["status"][] = ["fixing", "testing", "pushing"];
 const BUSY: ItemFix["status"][] = ["queued", ...RUNNING];
 
+/** How hard an item looks to fix. Items for a person are complex, whatever else triage said. */
+function levelOf(r: TriageRecord): Level {
+  if (r.recommendation === "human") return "complex";
+  return r.complexity === "quick" ? "quick" : r.complexity === "complex" ? "complex" : "standard";
+}
+
 function columnOf(r: TriageRecord): Column {
   const fix = r.fix;
-  if (fix && RUNNING.includes(fix.status)) return "fixing";
-  // Someone (you) moved it to in progress on the board.
-  if (r.status === "left" && r.elsewhere && !fix) return "fixing";
   if (fix?.prId && fix.status !== "queued") {
+    if (RUNNING.includes(fix.status)) return "failedReview";
     if (fix.review === "approved" || fix.review === "completed") return "fixed";
     if (fix.review === "rejected" || fix.review === "waiting" || fix.review === "abandoned" || fix.status === "failed") return "failedReview";
     return "review";
   }
+  if (fix && BUSY.includes(fix.status)) return levelOf(r);
   if (r.status !== "done" && r.status !== "left") return "triage";
-  return r.recommendation === "ai" ? "ai" : "person";
+  return levelOf(r);
+}
+
+/** Being worked on now: by Claude, waiting its turn, or by you on the board. */
+function inProgress(r: TriageRecord): boolean {
+  return (!!r.fix && BUSY.includes(r.fix.status)) || (r.status === "left" && !!r.elsewhere && !r.fix);
 }
 
 /** Columns listed newest first, by when each item entered them. */
-const NEWEST_FIRST: Column[] = ["fixing", "review", "failedReview", "fixed"];
+const NEWEST_FIRST: Column[] = ["review", "failedReview", "fixed"];
 
 /** When an item entered the column it is in now (0 if unknown). */
 function enteredAt(r: TriageRecord): number {
@@ -60,6 +65,11 @@ function enteredAt(r: TriageRecord): number {
   if (r.status === "left" && r.elsewhere && !fix?.prId) return time(r.elsewhereSince) || time(r.triagedAt);
   if (fix?.prId) return time(fix.reviewChangedAt) || time(fix.finishedAt) || time(fix.startedAt);
   return time(r.triagedAt);
+}
+
+/** Whether a time is today, on this computer's clock. */
+function isToday(at: number, now: number): boolean {
+  return at > 0 && new Date(at).toDateString() === new Date(now).toDateString();
 }
 
 /** A few words on why an item is for a person: Claude's own tag, or what can be told from the verdict. */
@@ -99,33 +109,36 @@ const REVIEW = {
   abandoned: { label: "abandoned", tone: "neutral" },
 } as const;
 
-/** The pills shown on a card or row: what is happening, why, and the risk. */
-function ItemPills({ r }: { r: TriageRecord }) {
+/** The small pills under a card or row: the pull request, why, the risk, and anything unusual. */
+function ItemPills({ r, full = false }: { r: TriageRecord; full?: boolean }) {
   const fix = r.fix;
   const reason = reasonTag(r);
+  const batch = batchOf(r);
   return (
     <>
-      {r.status === "triaging" && <Pill tone="blue" spin>Triaging</Pill>}
-      {r.status === "left" && r.elsewhere && !fix && <Pill tone="sand" title="Moved to in progress on the board, outside Warden">By hand · {r.elsewhere}</Pill>}
-      {r.status === "pending" && <Pill>Waiting</Pill>}
-      {r.status === "failed" && <Pill tone="critical">Triage failed</Pill>}
-      {fix && RUNNING.includes(fix.status) && <Pill tone="blue" spin>{fixLabel(fix)}</Pill>}
-      {fix?.status === "queued" && <Pill>{fixLabel(fix)}</Pill>}
-      {fix?.status === "failed" && <Pill tone="critical">{fix.prId ? `PR #${fix.prId} · last attempt failed` : "Fix failed"}</Pill>}
-      {fix?.status === "dryRun" && <Pill tone="ok">Fixed · dry run</Pill>}
-      {fix?.prId && fix.status === "done" && (
+      {full && <StatePill r={r} />}
+      {fix?.prId && (
         <Pill tone={REVIEW[fix.review ?? "open"].tone} onClick={fix.prUrl ? () => api.open(fix.prUrl!) : undefined} title="Open the pull request">
-          PR #{fix.prId} · {REVIEW[fix.review ?? "open"].label}
+          PR #{fix.prId}{full ? ` · ${REVIEW[fix.review ?? "open"].label}` : ""}
         </Pill>
       )}
+      {batch && <Pill tone="blue" title={batch.lead === r.id ? "Fixed together with other items in one pull request" : `Fixed together with #${batch.lead} and others in one pull request`}>
+        {batch.lead === r.id ? `Batch of ${batch.size}` : `Batch · #${batch.lead}`}
+      </Pill>}
       {reason && <Pill tone="sand">{reason}</Pill>}
-      {r.screenedBy && <Pill title={`Screened by ${r.screenedBy} on this computer; Claude did not triage it`}>Screened locally</Pill>}
-      {r.triagedBy && !r.screenedBy && <Pill title={`Triaged by ${r.triagedBy} on this computer, from the item's text`}>Triaged locally</Pill>}
       {r.overridden && <Pill title="You moved this item; Triage again lets Claude decide">Moved by you</Pill>}
       {!!r.history?.length && !r.fix && <Pill tone="major" title="Fixed before, and back on your board">Came back</Pill>}
-      {r.complexity === "complex" && r.recommendation === "ai" && <Pill tone="blue" title="Fixed with the complex-fix model">Complex fix</Pill>}
       {r.risk && <Pill tone={RISK_TONE[r.risk]}>{r.risk} risk</Pill>}
     </>
+  );
+}
+
+function StatePill({ r }: { r: TriageRecord }) {
+  const st = stateOf(r);
+  return (
+    <span className="state-chip" style={{ "--state": st.color } as React.CSSProperties}>
+      {st.spin ? <span className="spin" aria-hidden /> : <span className="state-dot" aria-hidden />}{st.label}
+    </span>
   );
 }
 
@@ -134,13 +147,39 @@ function ParentLine({ r }: { r: TriageRecord }) {
   if (!r.parent) return null;
   return (
     <span className="parent-line" title={`${r.parent.kind} ${r.parent.id}: ${r.parent.title}`}>
-      <span className="tone-faint">↳ {r.parent.kind} {r.parent.id} · </span>{r.parent.title}
+      <span>↳</span><span>{r.parent.kind} {r.parent.id} · {r.parent.title}</span>
     </span>
   );
 }
 
 function meta(r: TriageRecord) {
-  return [r.kind, r.project, r.priority !== null ? `P${r.priority}` : null, r.repo ? `${r.repo} (${r.branch})` : null].filter(Boolean).join(" · ");
+  return [r.kind, r.project, r.repo ? `${r.repo} (${r.branch})` : null].filter(Boolean).join(" · ");
+}
+
+/** What a card's tab says: where the item stands now, in a word or two. */
+function stateOf(r: TriageRecord): { label: string; color: string; spin?: boolean } {
+  const fix = r.fix;
+  const column = columnOf(r);
+  if (r.status === "triaging") return { label: "Triaging", color: "var(--accent-fg)", spin: true };
+  if (fix && RUNNING.includes(fix.status)) return { label: fixLabel(fix), color: "var(--accent-fg)", spin: true };
+  if (fix?.status === "queued") return { label: "Queued", color: "var(--muted)" };
+  if (column === "fixed") return { label: fix?.review === "completed" ? "Merged" : "Approved", color: "var(--ok)" };
+  if (column === "failedReview") return { label: fix?.status === "failed" ? "Fix failed" : fix?.review === "abandoned" ? "Abandoned" : "Changes requested", color: "var(--critical)" };
+  if (column === "review") return { label: "PR open", color: "var(--purple)" };
+  if (fix?.status === "failed") return { label: "Fix failed", color: "var(--critical)" };
+  if (fix?.status === "dryRun") return { label: "Fixed · dry run", color: "var(--ok)" };
+  if (r.status === "left" && r.elsewhere) return { label: `In progress · you`, color: "var(--sand)" };
+  if (r.status === "pending") return { label: "Awaiting triage", color: "var(--muted)" };
+  if (r.status === "failed") return { label: "Triage failed", color: "var(--critical)" };
+  if (column === "complex") return { label: "Ready for you", color: "var(--sand)" };
+  return { label: "Ready to fix", color: "var(--ok)" };
+}
+
+/** The batch an item is fixed in, if any: its first item and how many there are. */
+function batchOf(r: TriageRecord): { lead: number; size: number } | null {
+  const fix = r.fix;
+  if (!fix?.batch?.length) return null;
+  return { lead: fix.batchLead ?? r.id, size: fix.batch.length + 1 };
 }
 
 /** Claude's report, split into the parts it was asked for. Older free-text reports come back whole. */
@@ -404,14 +443,16 @@ function ItemModal({ r, onClose }: { r: TriageRecord; onClose: () => void }) {
   const fixBusy = !!fix && BUSY.includes(fix.status);
   // Any triaged item with a repository can be fixed by hand; one already with a pull request cannot.
   // A failed fix can be tried again wherever the item is on the board.
-  const canFix = (r.status === "done" || (r.status === "left" && fix?.status === "failed")) && !!r.repo && !fixBusy && !fix?.prId;
+  const level = levelOf(r);
+  // An item fixed in another's batch is worked on through that item.
+  const batchLead = fix?.batchLead ?? null;
+  const canFix = (r.status === "done" || (r.status === "left" && fix?.status === "failed")) && !!r.repo && !fixBusy && !fix?.prId && level !== "complex" && !batchLead;
   const canAddress = !!fix?.prId && !fixBusy;
   const act = (run: () => Promise<unknown>) => { setBusy(true); setError(null); run().catch((e) => setError(String(e))).finally(() => setBusy(false)); };
   const column = columnOf(r);
   const groupTone = column === "fixed" ? "ok" : column === "failedReview" ? "critical" : column === "review" ? "purple"
-    : r.recommendation === "ai" ? "ok" : r.recommendation === "human" ? "major" : "neutral";
-  const groupLabel = ["fixed", "failedReview", "review"].includes(column) ? COLUMNS[column].label
-    : r.recommendation === "ai" ? "AI can fix" : r.recommendation === "human" ? "For a person" : "To triage";
+    : column === "quick" ? "ok" : column === "standard" ? "blue" : column === "complex" ? "major" : "neutral";
+  const groupLabel = column === "fixed" ? "Fixed" : COLUMNS[column].label;
   const triaged = r.status === "done" || r.status === "left";
 
   return (
@@ -422,17 +463,24 @@ function ItemModal({ r, onClose }: { r: TriageRecord; onClose: () => void }) {
         <div className="modal-head">
           <div className="modal-title-row">
             <div className="stack" style={{ gap: 6, minWidth: 0 }}>
-              <div className="modal-title selectable">{r.title} <span className="tone-faint" style={{ fontWeight: 400 }}>#{r.id}</span></div>
+              <div className="modal-title selectable">{r.title} <span className="id">#{r.id}</span></div>
               <ParentLine r={r} />
               <div className="mono item-meta">{meta(r)}{r.status === "left" ? " · no longer on your board" : ""}</div>
             </div>
             <button className="modal-close" onClick={onClose} aria-label="Close">×</button>
           </div>
           <div className="pills">
-            <ItemPills r={r} />
+            <ItemPills r={r} full />
             <Pill tone={groupTone}>{groupLabel}</Pill>
           </div>
           {(triaged || fix) && <Steps r={r} />}
+          {fix?.batch && fix.batch.length > 0 && (
+            <div className="callout callout-blue">
+              {batchLead
+                ? <>Fixed together with #{batchLead}{fix.batch.filter((id) => id !== r.id).length > 0 ? ` and ${fix.batch.filter((id) => id !== r.id).map((id) => `#${id}`).join(", ")}` : ""} in one branch and pull request. Retry or follow it on #{batchLead}.</>
+                : <>Fixed together with {fix.batch.map((id) => `#${id}`).join(", ")} in one branch and pull request.</>}
+            </div>
+          )}
         </div>
 
         <div className="modal-body">
@@ -450,17 +498,11 @@ function ItemModal({ r, onClose }: { r: TriageRecord; onClose: () => void }) {
             {r.files.length > 0 && (
               <div className="chips">{r.files.map((f) => <span className="chip mono" key={f} title={f}>{f.split("/").pop()}</span>)}</div>
             )}
-            {r.triagedBy && !r.screenedBy && (
-              <div className="callout callout-neutral">Triaged by {r.triagedBy} on this computer, from the item's text alone (it cannot read the code). Turn off “Use the local model for all triage” and choose “Triage again” to have Claude look at it.</div>
-            )}
-            {r.screenedBy && (
-              <div className="callout callout-neutral">Screened by {r.screenedBy} on this computer, which judged it needs a person, so Claude did not triage it. Choose “Triage again” to have Claude look at it.</div>
-            )}
             {r.manipulation && <div className="callout callout-critical"><span className="callout-mark">!</span><span className="selectable">Text aimed at automated tools was found and ignored: “{r.manipulation}”</span></div>}
             {r.error && <div className="callout callout-critical"><span className="callout-mark">!</span><span className="selectable" style={{ whiteSpace: "pre-wrap" }}>{r.error}</span></div>}
             {r.aiSuitable !== null && (
               <span className="help">
-                AI suitable: {r.aiSuitable ? "yes" : "no"} · confidence {r.confidence}{r.complexity ? ` · ${r.complexity} fix` : ""}
+                AI suitable: {r.aiSuitable ? "yes" : "no"} · confidence {r.confidence} · {COLUMNS[level].label.toLowerCase()}
                 {r.tagged ? " · tagged" : ""}{r.commented ? " · you were mentioned in a comment" : ""}
                 {r.triagedAt ? ` · triaged ${ago(r.triagedAt, Date.now())}` : ""}
               </span>
@@ -492,7 +534,7 @@ function ItemModal({ r, onClose }: { r: TriageRecord; onClose: () => void }) {
             <label className="field">
               <span>Anything Claude should know? <span className="tone-faint" style={{ fontWeight: 400 }}>· optional</span></span>
               <textarea className="input" rows={4} value={notes} autoFocus spellCheck
-                placeholder={r.recommendation === "human"
+                placeholder={r.overridden
                   ? "e.g. the business rule is that withdrawn subjects never count as active; the totals come from ReportService"
                   : "e.g. where the problem is, how it should behave, or what to leave alone"}
                 onChange={(e) => setNotes(e.target.value)}
@@ -508,29 +550,24 @@ function ItemModal({ r, onClose }: { r: TriageRecord; onClose: () => void }) {
         )}
         <div className="modal-foot">
           {canFix && !composing && (
-            <button className={`btn ${r.recommendation === "ai" ? "primary" : ""}`} disabled={busy}
-              title={r.recommendation === "human" ? "Triage thought a person should handle this. Claude fixes it anyway; the tests must pass and Warden reviews the pull request." : undefined}
+            <button className="btn primary" disabled={busy}
+              title="Claude fixes it in its own worktree, adds tests and runs them; only if they pass is a pull request opened"
               onClick={() => { setNotes(fix?.notes ?? ""); setComposing(true); }}>
-              {fix ? "Fix again" : r.recommendation === "human" ? "Fix anyway" : "Fix with Claude"}
+              {fix ? "Fix again" : "Fix with AI"}
             </button>
           )}
           {canAddress && (
             <button className="btn primary" disabled={busy} title="Claude reads the open comments on the pull request, changes the code, runs the tests and pushes to the same branch"
               onClick={() => act(() => api.addressPrFeedback(r.id))}>Address PR comments</button>
           )}
-          {triaged && !fixBusy && !fix?.prId && r.recommendation === "human" && (
-            <button className="btn" disabled={busy} title="Put it with the items an AI agent can fix. With Fix automatically on, it is queued for Claude."
-              onClick={() => act(() => api.setRecommendation(r.id, true))}>Move to AI can fix</button>
-          )}
-          {triaged && !fixBusy && !fix?.prId && r.recommendation === "ai" && (
-            <button className="btn ghost" disabled={busy} title="Leave it for a person; automatic fixes skip it"
-              onClick={() => act(() => api.setRecommendation(r.id, false))}>{r.overridden ? "Move back to For a person" : "Move to For a person"}</button>
-          )}
-          {triaged && !fixBusy && !fix?.prId && r.repo && (
-            <button className="btn ghost" disabled={busy} title="Which fix model this item gets"
-              onClick={() => act(() => api.setComplexity(r.id, r.complexity !== "complex"))}>
-              {r.complexity === "complex" ? "Treat as a simple fix" : "Treat as a complex fix"}
-            </button>
+          {triaged && !fixBusy && !fix?.prId && (
+            <div className="seg" role="radiogroup" aria-label="Difficulty"
+              title="Which column the item is in. Quick and standard items can be fixed by AI; complex ones are left for you.">
+              {LEVELS.map((l) => (
+                <button key={l} role="radio" aria-checked={level === l} className={level === l ? "on" : ""} disabled={busy}
+                  onClick={() => level !== l && act(() => api.setLevel(r.id, l))}>{COLUMNS[l].label.replace(" fix", "")}</button>
+              ))}
+            </div>
           )}
           {column === "failedReview" && fix?.prId && (fix.review === "rejected" || fix.review === "waiting") && !fixBusy && (
             <ApproveAnyway prId={fix.prId} project={r.project} compact />
@@ -556,9 +593,12 @@ function ItemModal({ r, onClose }: { r: TriageRecord; onClose: () => void }) {
 /** What can be done with an item from the board without opening it. */
 interface ItemActions {
   open: (id: number) => void;
+  fix: (r: TriageRecord) => void;
   newSession: (r: TriageRecord) => void;
   remove: (r: TriageRecord) => void;
 }
+
+const FIX_ICON = <svg viewBox="0 0 24 24" aria-hidden><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.8-3.8a6 6 0 0 1-7.9 7.9l-6.9 6.9a2.1 2.1 0 0 1-3-3l6.9-6.9a6 6 0 0 1 7.9-7.9z" /></svg>;
 
 /** The ⋯ button on a card or row, and its menu. */
 function ItemMenu({ r, actions }: { r: TriageRecord; actions: ItemActions }) {
@@ -574,21 +614,34 @@ function ItemMenu({ r, actions }: { r: TriageRecord; actions: ItemActions }) {
   }, [open]);
   const column = columnOf(r);
   // Only items still waiting for someone to start on them.
-  const canSession = (column === "ai" || column === "person") && !!r.repo;
+  const waiting = LEVELS.includes(column as Level) && !inProgress(r) && !r.fix?.prId && !!r.repo;
+  const canSession = waiting;
+  const canFix = waiting && column !== "complex" && !r.fix?.batchLead && (r.status === "done" || r.fix?.status === "failed");
   const pick = (run: () => void) => (e: React.MouseEvent) => { e.stopPropagation(); setOpen(false); run(); };
   return (
     <div className="item-menu" ref={ref} onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
       <button className="item-menu-button" aria-label={`Actions for #${r.id}`} aria-haspopup="menu" aria-expanded={open}
-        onClick={(e) => { e.stopPropagation(); setOpen(!open); }}>⋯</button>
+        onClick={(e) => { e.stopPropagation(); setOpen(!open); }}>···</button>
       {open && (
         <div className="item-menu-list" role="menu">
-          <button role="menuitem" onClick={pick(() => actions.open(r.id))}>Open</button>
+          <button role="menuitem" onClick={pick(() => actions.open(r.id))}>
+            <svg viewBox="0 0 24 24" aria-hidden><path d="M14 4h6v6M20 4l-8 8M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" /></svg>Open
+          </button>
+          {canFix && (
+            <button role="menuitem" onClick={pick(() => actions.fix(r))}
+              title="Claude fixes it in its own worktree, adds tests and runs them; only if they pass is a pull request opened">{FIX_ICON}{r.fix ? "Fix again" : "Fix with AI"}</button>
+          )}
           {canSession && (
             <button role="menuitem" onClick={pick(() => actions.newSession(r))}
-              title={`A new worktree from the latest base branch, and a Claude Code session there with /fix ${r.id} ready`}>New session</button>
+              title={`A new worktree from the latest base branch, and a Claude Code session there with /fix ${r.id} ready`}>
+              <svg viewBox="0 0 24 24" aria-hidden><path d="M4 17l6-6-6-6M12 19h8" /></svg>New session
+            </button>
           )}
+          <hr />
           <button role="menuitem" className="danger" onClick={pick(() => actions.remove(r))}
-            title="Forget this item; the next check adds it back if it still qualifies">Remove</button>
+            title="Forget this item; the next check adds it back if it still qualifies">
+            <svg viewBox="0 0 24 24" aria-hidden><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" /></svg>Remove
+          </button>
         </div>
       )}
     </div>
@@ -603,33 +656,67 @@ const activate = (open: () => void) => ({
   onKeyDown: (e: React.KeyboardEvent) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } },
 });
 
-function Card({ r, actions }: { r: TriageRecord; actions: ItemActions }) {
+/** Items that can be picked for a batch fix: quick or standard, mapped, and not started. */
+function selectable(r: TriageRecord): boolean {
   const column = columnOf(r);
+  const fix = r.fix;
+  return (column === "quick" || column === "standard") && !!r.repo && !fix?.prId && !fix?.batchLead
+    && !(fix && RUNNING.includes(fix.status)) && !(r.status === "left" && r.elsewhere && !fix)
+    && (r.status === "done" || fix?.status === "failed");
+}
+
+/** Picking items for a batch fix. */
+interface Selection { has: (id: number) => boolean; toggle: (id: number) => void }
+
+function Card({ r, actions, selection }: { r: TriageRecord; actions: ItemActions; selection: Selection }) {
+  const st = stateOf(r);
+  const picked = selection.has(r.id);
+  const age = enteredAt(r);
   return (
-    <div className={`board-card ${column === "fixing" ? "is-fixing" : ""} ${column === "fixed" ? "is-fixed" : ""}`} {...activate(() => actions.open(r.id))}>
-      <span className="card-head">
-        <span className="card-title">{r.title} <span className="tone-faint" style={{ fontWeight: 400 }}>#{r.id}</span></span>
-        <ItemMenu r={r} actions={actions} />
+    <article className={`board-card ${picked ? "selected" : ""}`} style={{ "--state": st.color } as React.CSSProperties} {...activate(() => actions.open(r.id))}>
+      <div className="card-top">
+        <span className="state-tab">{st.spin ? <span className="spin" aria-hidden /> : <span className="state-dot" aria-hidden />}{st.label}</span>
+        <span className="card-actions">
+          {selectable(r) && <Checkbox on={picked} onChange={() => selection.toggle(r.id)} label={`Select #${r.id} for a batch fix`} />}
+          <ItemMenu r={r} actions={actions} />
+        </span>
+      </div>
+      <div className="card-body">
+        <span className="card-title">{r.title} <span className="id">#{r.id}</span></span>
+        <ParentLine r={r} />
+        <span className="item-meta">{meta(r)}</span>
+        <span className="card-foot">
+          {r.priority !== null && <span className="tpill tpill-neutral tpill-mono">P{r.priority}</span>}
+          <ItemPills r={r} />
+          {age > 0 && <span className="age">{ago(new Date(age).toISOString(), Date.now())}</span>}
+        </span>
+      </div>
+    </article>
+  );
+}
+
+function Row({ r, actions, selection }: { r: TriageRecord; actions: ItemActions; selection: Selection }) {
+  const picked = selection.has(r.id);
+  const age = enteredAt(r);
+  return (
+    <div className={`list-row ${inProgress(r) ? "is-busy" : ""} ${picked ? "selected" : ""}`} {...activate(() => actions.open(r.id))}>
+      <span style={{ display: "flex" }}>{selectable(r) && <Checkbox on={picked} onChange={() => selection.toggle(r.id)} label={`Select #${r.id} for a batch fix`} />}</span>
+      <StatePill r={r} />
+      <span className="stack" style={{ gap: 3, minWidth: 0 }}>
+        <span className="row-title">{r.title} <span className="id">#{r.id}</span></span>
+        <ParentLine r={r} />
+        <span className="item-meta">{meta(r)}</span>
+        <span className="pills"><ItemPills r={r} /></span>
       </span>
-      <ParentLine r={r} />
-      <span className="mono item-meta">{meta(r)}</span>
-      <span className="pills"><ItemPills r={r} /></span>
+      <span>{r.priority !== null && <span className="tpill tpill-neutral tpill-mono">P{r.priority}</span>}</span>
+      <span className="when" style={{ textAlign: "left" }}>{age > 0 ? ago(new Date(age).toISOString(), Date.now()) : ""}</span>
+      <ItemMenu r={r} actions={actions} />
     </div>
   );
 }
 
-function Row({ r, actions, first }: { r: TriageRecord; actions: ItemActions; first: boolean }) {
-  return (
-    <div className={`list-row ${first ? "" : "divided"}`} {...activate(() => actions.open(r.id))}>
-      <span className="stack" style={{ gap: 4, minWidth: 0 }}>
-        <span className="row-title">{r.title} <span className="tone-faint" style={{ fontWeight: 400 }}>#{r.id}</span></span>
-        <ParentLine r={r} />
-        <span className="mono item-meta">{meta(r)}</span>
-      </span>
-      <span className="pills" style={{ justifyContent: "flex-end" }}><ItemPills r={r} /></span>
-      <ItemMenu r={r} actions={actions} />
-    </div>
-  );
+function storedShowFixed(): boolean {
+  try { return localStorage.getItem("warden.triage.showFixed") === "1"; } catch { return false; }
 }
 
 function storedView(): View {
@@ -641,29 +728,43 @@ export function Triage({ triage, now, autoFix, paused, onSettings, project, onPr
   /** The project shown ("" for all), shared with the sidebar. */
   project: string; onProject: (project: string) => void;
 }) {
-  const [tab, setTab] = useState<Tab>("all");
   const [view, setViewState] = useState<View>(storedView);
   const setView = (v: View) => { setViewState(v); try { localStorage.setItem("warden.triage.view", v); } catch { /* not kept */ } };
   const [query, setQuery] = useState("");
-  const [collapsed, setCollapsed] = useState<Partial<Record<Column, boolean>>>({ fixed: true });
+  // Items picked for a batch fix.
+  const [picked, setPicked] = useState<number[]>([]);
+  const [batching, setBatching] = useState(false);
+  const [batchError, setBatchError] = useState<string | null>(null);
+  const selection: Selection = {
+    has: (id) => picked.includes(id),
+    toggle: (id) => { setBatchError(null); setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id])); },
+  };
+  const [showFixed, setShowFixedState] = useState(storedShowFixed);
+  const setShowFixed = (on: boolean) => { setShowFixedState(on); try { localStorage.setItem("warden.triage.showFixed", on ? "1" : ""); } catch { /* not kept */ } };
 
   const [openId, setOpenId] = useState<number | null>(null);
   const [showAll, setShowAll] = useState<Partial<Record<Column, boolean>>>({});
   // What happened after a board action (a new session, a removal), shown above the board.
-  const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
+  const [notice, setNotice] = useState<{ ok: boolean; title: string; text: string } | null>(null);
   const actions: ItemActions = {
     open: (id) => setOpenId(id),
+    fix: (r) => {
+      api.fixWorkItem(r.id, r.fix?.notes ?? "").then(
+        () => setNotice({ ok: true, title: "Fix started", text: `Fixing #${r.id}. It moves to the top of ${COLUMNS[columnOf(r)].label} while Claude works on it.` }),
+        (e) => setNotice({ ok: false, title: "The fix did not start", text: `Could not start a fix for #${r.id}: ${e}` }),
+      );
+    },
     newSession: (r) => {
-      setNotice({ ok: true, text: `Getting a worktree ready for #${r.id}…` });
+      setNotice({ ok: true, title: "Getting a session ready", text: `Getting a worktree ready for #${r.id}…` });
       api.newSession(r.id).then(
-        (path) => setNotice({ ok: true, text: `Opened Claude in ${path}. Confirm the folder, then press Enter to start /fix ${r.id}.` }),
-        (e) => setNotice({ ok: false, text: `Could not start a session for #${r.id}: ${e}` }),
+        (path) => setNotice({ ok: true, title: "Session ready", text: `Opened Claude in ${path}. Confirm the folder, then press Enter to start /fix ${r.id}.` }),
+        (e) => setNotice({ ok: false, title: "The session did not start", text: `Could not start a session for #${r.id}: ${e}` }),
       );
     },
     remove: (r) => {
       api.forgetItem(r.id).then(
-        () => setNotice({ ok: true, text: `Removed #${r.id}. It comes back at the next check if it still qualifies.` }),
-        (e) => setNotice({ ok: false, text: String(e) }),
+        () => setNotice({ ok: true, title: "Removed from Warden", text: `Removed #${r.id}. It comes back at the next check if it still qualifies.` }),
+        (e) => setNotice({ ok: false, title: "Could not remove it", text: String(e) }),
       );
     },
   };
@@ -701,11 +802,14 @@ export function Triage({ triage, now, autoFix, paused, onSettings, project, onPr
     .filter(matches)
     .sort((a, b) => Number(b.status === "triaging") - Number(a.status === "triaging") || (a.priority ?? 99) - (b.priority ?? 99) || a.id - b.id);
   // Work in motion is newest first, by when it entered the column; the rest by priority.
+  // Items being fixed come first, newest first, then the rest; Fixed shows only today's.
   const inColumn = (c: Column) => {
-    const items = sorted.filter((r) => columnOf(r) === c);
-    return NEWEST_FIRST.includes(c) ? items.sort((a, b) => enteredAt(b) - enteredAt(a) || b.id - a.id) : items;
+    const items = sorted.filter((r) => columnOf(r) === c && (c !== "fixed" || isToday(enteredAt(r), now)));
+    const ordered = NEWEST_FIRST.includes(c) ? items.sort((a, b) => enteredAt(b) - enteredAt(a) || b.id - a.id) : items;
+    const busy = ordered.filter(inProgress).sort((a, b) => enteredAt(b) - enteredAt(a) || b.id - a.id);
+    return { busy, rest: ordered.filter((r) => !inProgress(r)) };
   };
-  const count = (cs: Column[]) => records.filter((r) => cs.includes(columnOf(r))).length;
+  const columns = (cs: Column[]) => cs.filter((c) => c !== "fixed" || showFixed);
 
   // Finding one item by number opens it.
   const only = number !== null && sorted.length === 1 ? sorted[0].id : null;
@@ -713,100 +817,80 @@ export function Triage({ triage, now, autoFix, paused, onSettings, project, onPr
 
   const open = openId !== null ? triage.records.find((r) => r.id === openId) : undefined;
   const current = triage.records.find((r) => r.id === triage.current);
-  const groups = (TABS.find((t) => t.key === tab) ?? TABS[0]).columns
-    .map((c) => ({ c, items: inColumn(c) }))
-    .filter((g) => !(q && g.items.length === 0));
-  const anyOpen = groups.some((g) => !collapsed[g.c]);
+  const groups = columns(LIST)
+    .map((c) => ({ c, ...inColumn(c) }))
+    .map((g) => ({ ...g, items: [...g.busy, ...g.rest] }));
+
+  // Picked items that can still be fixed; ones that started meanwhile drop out.
+  const chosen = picked.map((id) => triage.records.find((r) => r.id === id)).filter((r): r is TriageRecord => !!r && selectable(r));
+  const repos = new Set(chosen.map((r) => `${r.project}/${r.repo}@${r.branch}`));
+  const batchNote = repos.size > 1 ? `${repos.size} repos · ${repos.size} branches, ${repos.size} PRs` : "1 branch · 1 PR";
+  const batchFix = () => {
+    setBatching(true);
+    setBatchError(null);
+    api.batchFix(chosen.map((r) => r.id)).then(
+      (n) => {
+        setPicked([]);
+        setNotice({ ok: true, title: "Batch fix started", text: `Fixing ${chosen.length} item${chosen.length === 1 ? "" : "s"} in ${n} pull request${n === 1 ? "" : "s"}. They move to the top of their columns while Claude works.` });
+      },
+      (e) => setBatchError(String(e)),
+    ).finally(() => setBatching(false));
+  };
+  const toTriage = triage.records.filter((r) => r.status === "pending" || r.status === "triaging").length;
+  const readyQuick = triage.records.filter((r) => r.status === "done" && levelOf(r) === "quick" && (!r.fix || (r.fix.automatic && r.fix.status === "queued"))).length;
 
   return (
-    <div className={`triage ${view === "board" ? "is-board" : ""}`}>
-      {triage.error && (
-        <div className="warning tint-critical" role="alert">
-          <b className="tone-critical">Triage could not run</b>
-          <span className="selectable" style={{ whiteSpace: "pre-wrap" }}>{triage.error}</span>
+    <div className="triage">
+      <PageHeader title="Board triage"
+        crumbs={<><span>Triage</span><span className="tone-faint" style={{ background: "none", padding: 0 }}>/</span><span className="here">{view === "list" ? "List" : "Board"}</span></>}
+        sub={`${onBoard} item${onBoard === 1 ? "" : "s"} assigned to you in a to-do state${inProject ? ` in ${inProject}` : ""}${triage.lastCheck ? ` · boards checked ${ago(triage.lastCheck, now)}` : ""}`}>
+        <SearchBox className="triage-search" value={query} onChange={setQuery} placeholder="Find PR number, item or title…" />
+        {failedFixes > 0 && !triage.fixProblem && (
+          <button className="btn" disabled={retrying} onClick={retry} title="Queue every failed fix again">Retry failed ({failedFixes})</button>
+        )}
+        <button className="toggle-fixed" onClick={() => setShowFixed(!showFixed)} aria-pressed={showFixed} title="Show items whose pull request was approved today">
+          <span className={`checkbox small ${showFixed ? "on" : ""}`} aria-hidden>{showFixed && <svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>}</span>Fixed today
+        </button>
+        {projects.length > 1 && (
+          <select className="triage-project" value={inProject} onChange={(e) => setProject(e.target.value)} aria-label="Project">
+            <option value="">All projects</option>
+            {projects.map((p) => <option key={p} value={p}>{p} ({allRecords.filter((r) => r.project === p && r.status !== "left").length})</option>)}
+          </select>
+        )}
+        <div className="seg" role="tablist" aria-label="View">
+          {(["list", "board"] as View[]).map((v) => (
+            <button key={v} role="tab" aria-selected={view === v} className={view === v ? "on" : ""} onClick={() => setView(v)}>{v === "list" ? "List" : "Board"}</button>
+          ))}
         </div>
-      )}
-      {triage.fixProblem && (
-        <div className="warning tint-critical" role="alert">
-          <b className="tone-critical">Fixing is paused</b>
-          <span className="selectable" style={{ whiteSpace: "pre-wrap" }}>{triage.fixProblem}</span>
-          <span>Every fix would fail the same way, so none are started. Sort it out in <button className="link" onClick={onSettings}>Settings</button> (saving lifts the pause), then retry.</span>
-          {failedFixes > 0 && <div><button className="btn" disabled={retrying} onClick={retry}>Retry failed fixes ({failedFixes})</button></div>}
-        </div>
-      )}
+      </PageHeader>
 
+      {triage.error && <Notice tone="critical" title="Triage could not run">{triage.error}</Notice>}
+      {triage.fixProblem && (
+        <Notice tone="critical" title="Fixing is paused"
+          actions={<>
+            <button className="btn" onClick={onSettings}>Open Settings</button>
+            {failedFixes > 0 && <button className="btn" disabled={retrying} onClick={retry}>Retry failed fixes ({failedFixes})</button>}
+          </>}>
+          {triage.fixProblem}{"\n"}Every fix would fail the same way, so none are started. Sort it out in Settings (saving lifts the pause), then retry.
+        </Notice>
+      )}
       {paused && (
-        <div className="warning tint-major" role="status">
-          <b className="tone-major">Monitoring is paused</b>
-          <span>
-            {inFlight > 0 ? `Finishing the ${inFlight} item${inFlight === 1 ? "" : "s"} already being worked on; nothing new starts` : "Nothing new is reviewed, triaged or fixed"} until
-            you resume with the play button at the top of the sidebar. The board is still kept up to date.
-          </span>
-        </div>
+        <Notice tone="major" title="Monitoring is paused">
+          {inFlight > 0 ? `Finishing the ${inFlight} item${inFlight === 1 ? "" : "s"} already being worked on; nothing new starts` : "Nothing new is reviewed, triaged or fixed"} until
+          you resume with the play button at the top of the sidebar. The board is still kept up to date.
+        </Notice>
       )}
       {notice && (
-        <div className={`warning ${notice.ok ? "tint-ok" : "tint-critical"}`} role="status">
-          <div className="inline" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
-            <span className="selectable">{notice.text}</span>
-            <button className="modal-close" style={{ width: 24, height: 24, fontSize: 14 }} onClick={() => setNotice(null)} aria-label="Dismiss">×</button>
-          </div>
-        </div>
+        <Notice tone={notice.ok ? "ok" : "critical"} title={notice.title} onDismiss={() => setNotice(null)}>{notice.text}</Notice>
       )}
-      <div className="triage-bar">
-        <div className="triage-bar-head">
-          <b>{onBoard} item{onBoard === 1 ? "" : "s"} assigned to you in a to-do state{inProject ? ` in ${inProject}` : ""}</b>
-          <span className="triage-bar-meta">
-            <span className="help">
-              {triage.lastCheck ? `Boards checked ${ago(triage.lastCheck, now)}` : ""}
-            </span>
-          </span>
-        </div>
-        {current && (
-          <span className="help">
-            <span className="spinner" aria-hidden /> Triaging #{current.id}{triage.currentModel ? <> with <b className="tone-muted">{triage.currentModel}</b></> : null}: {triage.lines[triage.lines.length - 1]?.text ?? current.title}
-          </span>
-        )}
-        {(() => {
-          const toTriage = triage.records.filter((r) => r.status === "pending" || r.status === "triaging").length;
-          const ready = triage.records.filter((r) => r.status === "done" && r.recommendation === "ai" && (!r.fix || (r.fix.automatic && r.fix.status === "queued"))).length;
-          return autoFix && toTriage > 0 && ready > 0
-            ? <span className="help">Automatic fixes start once the remaining {toTriage} item{toTriage === 1 ? " is" : "s are"} triaged, so they can run side by side. “Fix with Claude” starts one straight away.</span>
-            : null;
-        })()}
-        <div className="triage-bar-tools">
-          <input className="triage-search" type="search" value={query} onChange={(e) => setQuery(e.target.value)}
-            placeholder="Find PR number, item or title" aria-label="Find a triage item by pull request number, item number or title" />
-          {view === "list" && (
-            <div className="seg" role="tablist" aria-label="Show">
-              {TABS.map((t) => (
-                <button key={t.key} role="tab" aria-selected={tab === t.key} className={tab === t.key ? "on" : ""} onClick={() => setTab(t.key)}>
-                  {t.label}{t.key !== "all" && <span className="seg-count">{count(t.columns)}</span>}
-                </button>
-              ))}
-            </div>
-          )}
-          <span className="spacer" />
-          {failedFixes > 0 && !triage.fixProblem && (
-            <button className="btn" disabled={retrying} onClick={retry} title="Queue every failed fix again">Retry failed fixes ({failedFixes})</button>
-          )}
-          {view === "list" && groups.length > 0 && (
-            <button className="btn ghost" onClick={() => setCollapsed(anyOpen ? Object.fromEntries(LIST.map((c) => [c, true])) : {})}>
-              {anyOpen ? "Collapse all" : "Expand all"}
-            </button>
-          )}
-          {projects.length > 1 && (
-            <select className="triage-project" value={inProject} onChange={(e) => setProject(e.target.value)} aria-label="Project">
-              <option value="">All projects</option>
-              {projects.map((p) => <option key={p} value={p}>{p} ({allRecords.filter((r) => r.project === p && r.status !== "left").length})</option>)}
-            </select>
-          )}
-          <div className="seg" role="tablist" aria-label="View">
-            {(["list", "board"] as View[]).map((v) => (
-              <button key={v} role="tab" aria-selected={view === v} className={view === v ? "on" : ""} onClick={() => setView(v)}>{v === "list" ? "List" : "Board"}</button>
-            ))}
-          </div>
-        </div>
-      </div>
+      {current && (
+        <span className="triage-note">
+          <span className="spinner" aria-hidden />Triaging #{current.id}{triage.currentModel ? <> with <b>{triage.currentModel}</b></> : null}: {triage.lines[triage.lines.length - 1]?.text ?? current.title}
+        </span>
+      )}
+      {autoFix && toTriage > 0 && readyQuick > 0 && (
+        <span className="triage-note">Automatic fixes start once the remaining {toTriage} item{toTriage === 1 ? " is" : "s are"} triaged, so they can run side by side. “Fix with AI” starts one straight away.</span>
+      )}
 
       {records.length === 0 && !triage.error && (
         <div className="empty">
@@ -818,47 +902,62 @@ export function Triage({ triage, now, autoFix, paused, onSettings, project, onPr
 
       {records.length > 0 && view === "board" && (
         <div className="board">
-          {BOARD.map((c) => {
-            const items = inColumn(c);
+          {columns(BOARD).map((c) => {
+            const { busy, rest } = inColumn(c);
+            const total = busy.length + rest.length;
+            const shown = showAll[c] ? rest : rest.slice(0, Math.max(0, COLUMN_LIMIT - busy.length));
+            const split = busy.length > 0 && rest.length > 0;
             return (
-              <div className="board-col" key={c}>
-                <div className="col-head">
-                  <div className="col-title"><span className={`dot dot-${c}`} /><b>{COLUMNS[c].label}</b><span className="col-count">{items.length}</span></div>
-                  <span className="help col-desc">{COLUMNS[c].desc}</span>
-                </div>
-                {items.length === 0 && <div className="col-empty">{q ? "No matches" : COLUMNS[c].empty}</div>}
-                {(showAll[c] ? items : items.slice(0, COLUMN_LIMIT)).map((r) => <Card key={r.id} r={r} actions={actions} />)}
-                {items.length > COLUMN_LIMIT && (
+              <section className="board-col" key={c} aria-label={COLUMNS[c].label}>
+                <header className="col-head">
+                  <div className="col-title"><span className={`dot dot-${c}`} />{COLUMNS[c].label}<span className="col-count">{total}</span></div>
+                  <span className="col-desc">{COLUMNS[c].desc}</span>
+                </header>
+                {total === 0 && <div className="col-empty">{q ? "No matches" : COLUMNS[c].empty}</div>}
+                {split && <div className="col-divider now">Fixing now</div>}
+                {busy.map((r) => <Card key={r.id} r={r} actions={actions} selection={selection} />)}
+                {split && <div className="col-divider" style={{ marginTop: 14 }}>Waiting</div>}
+                {shown.map((r) => <Card key={r.id} r={r} actions={actions} selection={selection} />)}
+                {total > COLUMN_LIMIT && (
                   <button className="col-more" onClick={() => setShowAll((s) => ({ ...s, [c]: !s[c] }))}>
-                    {showAll[c] ? `Show the first ${COLUMN_LIMIT}` : `Show all ${items.length} (${items.length - COLUMN_LIMIT} more)`}
+                    {showAll[c] ? `Show the first ${COLUMN_LIMIT}` : `Show all ${total} (${total - COLUMN_LIMIT} more)`}
                   </button>
                 )}
-              </div>
+              </section>
             );
           })}
         </div>
       )}
 
-      {records.length > 0 && view === "list" && groups.map(({ c, items }) => {
-        const shut = !!collapsed[c];
-        return (
-          <section className="list-group" key={c}>
-            <button className="group-head" onClick={() => setCollapsed((s) => ({ ...s, [c]: !s[c] }))} aria-expanded={!shut}>
-              <span className={`chev ${shut ? "" : "open"}`}>›</span>
-              <span className={`dot dot-${c}`} />
-              <b>{COLUMNS[c].label}</b>
-              <span className="col-count">{items.length}</span>
-              <span className="help">{COLUMNS[c].desc}</span>
-            </button>
-            {!shut && (
-              <div className={`list-card ${c === "fixing" ? "is-fixing" : ""}`}>
-                {items.length === 0 && <div className="list-empty">{q ? "No matches." : `${COLUMNS[c].empty}.`}</div>}
-                {items.map((r, i) => <Row key={r.id} r={r} first={i === 0} actions={actions} />)}
-              </div>
-            )}
-          </section>
-        );
-      })}
+      {records.length > 0 && view === "list" && (
+        <div className="table-card" style={{ marginBottom: 88 }}>
+          <div className="table-head list-head"><span /><span>State</span><span>Item</span><span>Pri</span><span>Updated</span><span /></div>
+          {groups.filter((g) => g.items.length > 0).map(({ c, items }) => (
+            <div className="table-group" key={c}>
+              <div className="table-group-head"><span className={`dot dot-${c}`} style={{ width: 9, height: 9 }} />{COLUMNS[c].label}<span className="num-chip">{items.length}</span><span className="help">{COLUMNS[c].desc}</span></div>
+              {items.map((r) => <Row key={r.id} r={r} actions={actions} selection={selection} />)}
+            </div>
+          ))}
+          {groups.some((g) => g.items.length === 0) && (
+            <div className="list-empty">Nothing in {groups.filter((g) => g.items.length === 0).map((g) => COLUMNS[g.c].label).join(", ")}</div>
+          )}
+        </div>
+      )}
+
+      {chosen.length > 0 && (
+        <div className="batch-bar" role="region" aria-label="Batch fix">
+          <span className="batch-count"><b>{chosen.length}</b>selected</span>
+          <span className="batch-refs">{chosen.map((r) => `#${r.id}`).join("  ")}</span>
+          <span className="batch-sep" />
+          {batchError ? <span className="batch-error selectable">{batchError}</span> : <span className="batch-note">{batchNote}</span>}
+          <button className="btn ghost" onClick={() => { setPicked([]); setBatchError(null); }}>Clear</button>
+          <button className="btn primary" disabled={batching} onClick={batchFix}
+            title="Claude fixes the picked items together: one branch and pull request for each repository, tested like any fix">
+            <svg viewBox="0 0 24 24" aria-hidden><path d="M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a9 9 0 0 1-9 9" /></svg>
+            {batching ? "Starting…" : chosen.length === 1 ? "Fix 1 item" : `Batch fix ${chosen.length} items`}
+          </button>
+        </div>
+      )}
 
       {open && <ItemModal r={open} onClose={() => setOpenId(null)} />}
     </div>

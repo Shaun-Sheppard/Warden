@@ -83,20 +83,20 @@ let settings: Settings = {
   reviewExisting: false, setupComplete: !location.search.includes("setup"), theme: "system", mentionAuthor: true, reviewPrompt: "", triagePrompt: "", triageCurrentSprint: true, triageDryRun: true, triageAutoFix: false, triagePaused: false, triageMaxFixes: 1, triagePostResults: false, notifications: true,
   triageEnabled: !location.search.includes("notriage"), triageProjects: [], triageStates: ["To Do", "New"], triageTypes: ["Bug"],
   areaMappings: [],
-  reviewModel: "opus", triageModel: "sonnet", fixModelSimple: "sonnet", fixModelComplex: "opus", fixEscalate: true, localPretriage: false, localUrl: "http://localhost:11434", localModel: "",
+  reviewModel: "opus", triageModel: "sonnet", fixModelSimple: "sonnet", fixModelStandard: "opus", fixModelComplex: "opus", fixEffortComplex: "high", triageOn: !location.search.includes("notriage"), fixPrompt: "", fixEscalate: true,
   projectConfigs: [
     {
       name: "Payments", review: true, people: ["Priya Nair", "Tom Okafor"], approveAndComplete: true, mergeStrategy: "noFastForward", deleteSourceBranch: true,
-      triage: !location.search.includes("notriage"), autoFix: true, currentSprint: true, postResults: false, states: ["To Do", "New"], types: ["Bug", "Story Bug"],
+      triage: !location.search.includes("notriage"), autoFix: false, autoFixScope: "quick", currentSprint: true, postResults: false, states: ["To Do", "New"], types: ["Bug", "Story Bug"],
       areas: [{ project: "Payments", areaPath: "Payments\\Refunds", repo: "payments-api", branch: "main", localPath: "~/Projects/payments-api", copyPaths: ["Payments.Api/appsettings.Development.json"], copyLocalOnly: false, setupCommand: "dotnet restore" }],
     },
     {
       name: "Customer Web", review: true, people: [], approveAndComplete: false, mergeStrategy: "squash", deleteSourceBranch: false,
-      triage: !location.search.includes("notriage"), autoFix: false, currentSprint: true, postResults: false, states: ["To Do", "New"], types: ["Bug"], areas: [],
+      triage: !location.search.includes("notriage"), autoFix: false, autoFixScope: "none", currentSprint: true, postResults: false, states: ["To Do", "New"], types: ["Bug"], areas: [],
     },
     {
       name: "Platform", review: true, people: [], approveAndComplete: false, mergeStrategy: "noFastForward", deleteSourceBranch: false,
-      triage: false, autoFix: false, currentSprint: true, postResults: false, states: ["To Do", "New"], types: ["Bug"], areas: [],
+      triage: false, autoFix: false, autoFixScope: "none", currentSprint: true, postResults: false, states: ["To Do", "New"], types: ["Bug"], areas: [],
     },
   ],
 };
@@ -237,7 +237,7 @@ let triage: TriageState = {
   records: [
     triageItem(5207, "Refund email shows the wrong currency symbol", "Payments", "Payments\\Refunds", { status: "triaging", tagged: false, triagedAt: null }),
     triageItem(5199, "Typo in refund confirmation message", "Payments", "Payments\\Refunds", {
-      risk: "low", aiSuitable: true, confidence: "high", recommendation: "ai", repo: "payments-api", branch: "main", complexity: "simple",
+      risk: "low", aiSuitable: true, confidence: "high", recommendation: "ai", repo: "payments-api", branch: "main", complexity: "quick",
       summary: "The confirmation message says 'recieved' instead of 'received'.",
       reason: "A one-word change to a resource string with an existing snapshot test.",
       approach: "Correct the string in RefundMessages.resx and update the snapshot.", files: ["src/Refunds/RefundMessages.resx"],
@@ -312,6 +312,19 @@ export const mockApi: Api = {
       tests: { command: "dotnet test", passed: true, output: "Passed!", durationSecs: 41 }, rounds: 1, finishedAt: now() }), 5000);
     return later(undefined);
   },
+  batchFix: (ids, notes) => {
+    const [lead, ...rest] = ids;
+    const set = (fix: Partial<ItemFix>) => {
+      triage = { ...triage, records: triage.records.map((r) => (r.id === lead ? { ...r, fix: { ...(r.fix ?? emptyFix), ...fix, batch: rest, batchLead: null } }
+        : rest.includes(r.id) ? { ...r, fix: { ...(r.fix ?? emptyFix), ...fix, batch: rest, batchLead: lead } } : r)) };
+      triageHandlers.forEach((h) => h(triage));
+    };
+    set({ ...emptyFix, notes: notes ?? "", status: "fixing", branch: `warden/${lead}-and-${rest.length}-more`, target: "main", repo: "payments-api", lines: [{ time: now(), kind: "cmd", text: `Claude is fixing ${ids.length} items together` }] });
+    setTimeout(() => set({ status: "testing", lines: [{ time: now(), kind: "cmd", text: "Running dotnet test" }] }), 4000);
+    setTimeout(() => set({ status: "dryRun", report: "SUMMARY: Both items are fixed.", finishedAt: now() }), 8000);
+    return later(1);
+  },
+  defaultBatchPrompt: () => later("- Read every item and all of its comments.\n- Fix them together, in one change: fix a shared cause once.\n- If any item is blocking, change nothing and say which."),
   addressPrFeedback: (id) => {
     const set = (fix: Partial<ItemFix>) => {
       triage = { ...triage, records: triage.records.map((r) => (r.id === id && r.fix ? { ...r, fix: { ...r.fix, ...fix } } : r)) };
@@ -342,14 +355,8 @@ export const mockApi: Api = {
     triageHandlers.forEach((h) => h(triage));
     return later(undefined);
   },
-  testLocalModel: (_url, model) => later(`${model || "model"} answered in 1.2s`, 800),
-  setComplexity: (id, complex) => {
-    triage = { ...triage, records: triage.records.map((r) => (r.id === id ? { ...r, complexity: complex ? "complex" : "simple" } : r)) };
-    triageHandlers.forEach((h) => h(triage));
-    return later(undefined);
-  },
-  setRecommendation: (id, ai) => {
-    triage = { ...triage, records: triage.records.map((r) => (r.id === id ? { ...r, recommendation: ai ? "ai" : "human", overridden: true } : r)) };
+  setLevel: (id, level) => {
+    triage = { ...triage, records: triage.records.map((r) => (r.id === id ? { ...r, complexity: level, recommendation: level === "complex" ? "human" : "ai", overridden: true } : r)) };
     triageHandlers.forEach((h) => h(triage));
     return later(undefined);
   },
@@ -386,6 +393,7 @@ export const mockApi: Api = {
   listPeople: () => later(["Aisha Rahman", "Daniel Reyes", "Ellie Shaw", "Marcus Lee", "Priya Nair", "Tom Okafor"]),
   claudeStatus: () => later({ found: true, path: "/opt/homebrew/bin/claude", version: "2.1.291 (Claude Code)", signedIn: true, supported: !location.search.includes("oldcli"), gitFound: true }),
   importLegacy: () => later(null),
+  defaultFixPrompt: () => later("- Read the item and all of its comments.\n- For a bug: find the root cause first, write a failing test, then fix it.\n- For a backlog item: implement it against the acceptance criteria."),
   defaultTriagePrompt: () => later("You are triaging a work item assigned to a developer.\n\nHow to judge:\n- `risk`: `low` for a small, local change.\n- `ai_suitable`: true only if the problem is clear.\n- `confidence`: how sure you are."),
   defaultPrompt: () => later("You are an experienced engineer reviewing a pull request.\n\nReview guidance:\n- First, check the change against the acceptance criteria of the linked work items.\n- Then look for defects the change introduces.\n- Look specifically for security problems the change introduces."),
   open: (url) => { window.open(url, "_blank"); return later(undefined); },

@@ -31,7 +31,7 @@ export function CheckButton({ checking, disabled = false, label = "Check now" }:
 
 export function Avatar({ name, size = 22 }: { name: string; size?: number }) {
   return (
-    <span className="avatar" style={{ width: size, height: size, fontSize: Math.round(size * 0.4), background: avatarColor(name) }} aria-hidden>
+    <span className="avatar" style={{ width: size, height: size, fontSize: Math.round(size * 0.38), "--hue": avatarColor(name) } as React.CSSProperties} aria-hidden>
       {initials(name)}
     </span>
   );
@@ -106,6 +106,68 @@ export function TagInput({ values, onChange, placeholder, suggestions, people = 
         onKeyDown={onKeyDown} onBlur={() => add(text)}
       />
       <datalist id={id}>{remaining.map((s) => <option key={s} value={s} />)}</datalist>
+    </div>
+  );
+}
+
+/** A page's title, a line under it, and its tools on the right. Drags the window. */
+export function PageHeader({ title, sub, crumbs, children }: {
+  title: ReactNode; sub?: ReactNode; crumbs?: ReactNode; children?: ReactNode;
+}) {
+  return (
+    <header className="topbar" data-tauri-drag-region>
+      <div className="page-title" data-tauri-drag-region>
+        {crumbs && <div className="crumbs">{crumbs}</div>}
+        <h1 data-tauri-drag-region>{title}</h1>
+        {sub && <div className="page-sub" data-tauri-drag-region>{sub}</div>}
+      </div>
+      {children && <div className="tools">{children}</div>}
+    </header>
+  );
+}
+
+export function SearchBox({ value, onChange, placeholder, className = "" }: {
+  value: string; onChange: (value: string) => void; placeholder: string; className?: string;
+}) {
+  return (
+    <label className={`search-box ${className}`}>
+      <svg viewBox="0 0 24 24" aria-hidden><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" /></svg>
+      <input type="search" value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} aria-label={placeholder} />
+    </label>
+  );
+}
+
+/** The design's square tick box, as a button so it works inside clickable cards. */
+export function Checkbox({ on, onChange, label, small = false }: { on: boolean; onChange: (on: boolean) => void; label: string; small?: boolean }) {
+  return (
+    <button type="button" role="checkbox" aria-checked={on} aria-label={label} title={label} className={`checkbox ${small ? "small" : ""} ${on ? "on" : ""}`}
+      onClick={(e) => { e.stopPropagation(); onChange(!on); }} onKeyDown={(e) => e.stopPropagation()}>
+      {on && <svg viewBox="0 0 24 24" aria-hidden><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>}
+    </button>
+  );
+}
+
+const NOTICE_ICON = {
+  ok: <path d="M5 12.5l4.5 4.5L19 7.5" />,
+  critical: <path d="M7 7l10 10M17 7L7 17" />,
+  major: <path d="M12 6v7M12 17.5v.5" />,
+  info: <path d="M12 11v6M12 7v.5" />,
+} as const;
+
+/** A notice at the top of a page: a coloured icon, a title, a line of detail and its actions. */
+export function Notice({ tone, title, children, actions, onDismiss, role }: {
+  tone: keyof typeof NOTICE_ICON; title: ReactNode; children?: ReactNode; actions?: ReactNode;
+  onDismiss?: () => void; role?: "alert" | "status";
+}) {
+  return (
+    <div className={`notice notice-${tone}`} role={role ?? (tone === "critical" ? "alert" : "status")}>
+      <span className="notice-icon" aria-hidden><svg viewBox="0 0 24 24">{NOTICE_ICON[tone]}</svg></span>
+      <div className="notice-text">
+        <b>{title}</b>
+        {children && <span className="selectable">{children}</span>}
+      </div>
+      {actions && <div className="notice-actions">{actions}</div>}
+      {onDismiss && <button className="notice-close" onClick={onDismiss} aria-label="Dismiss">×</button>}
     </div>
   );
 }

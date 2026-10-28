@@ -47,20 +47,26 @@ export interface Settings {
   /** Claude models per kind of work; "" for Claude Code's default. */
   reviewModel: string;
   triageModel: string;
+  /** Quick fixes (named simple before there were three levels). */
   fixModelSimple: string;
+  fixModelStandard?: string;
   fixModelComplex: string;
   fixEscalate: boolean;
   /** Effort per kind of work: low, medium, high, xhigh or max; "" for the default. */
   reviewEffort?: string;
   triageEffort?: string;
   fixEffortSimple?: string;
+  fixEffortStandard?: string;
   fixEffortComplex?: string;
-  /** Screen items with a local model (Ollama) before Claude triage. */
-  localPretriage?: boolean;
-  localUrl?: string;
-  localModel?: string;
-  /** The local model does all of triage; Claude is not used for triage. */
-  localTriageOnly?: boolean;
+  /** Which levels "Fix automatically" takes: "quick", or "standard" for quick and standard. */
+  /** Only in older settings: one "Fix automatically" choice for every project. */
+  autoFixScope?: string;
+  /** The triage feature as a whole; unset in settings from before the switch. */
+  triageOn?: boolean | null;
+  /** How Claude goes about a fix; "" for the built-in instructions. */
+  fixPrompt?: string;
+  /** How Claude goes about fixing several items together; "" for the built-in instructions. */
+  batchPrompt?: string;
   /** Only items in each project's current sprint. */
   triageCurrentSprint?: boolean;
   triageDryRun: boolean;
@@ -80,6 +86,9 @@ export interface Settings {
 }
 
 /** Everything configured for one project: its pull request reviews, and its board triage. */
+/** Which items "Fix automatically" takes: none, quick, or quick and standard. */
+export type AutoFixScope = "none" | "quick" | "standard";
+
 export interface ProjectConfig {
   name: string;
   review: boolean;
@@ -88,7 +97,10 @@ export interface ProjectConfig {
   mergeStrategy: string;
   deleteSourceBranch: boolean;
   triage: boolean;
+  /** Only in older settings; replaced by `autoFixScope`. */
   autoFix: boolean;
+  /** Which items are fixed without being asked. */
+  autoFixScope?: AutoFixScope | null;
   currentSprint: boolean;
   postResults: boolean;
   states: string[];
@@ -141,12 +153,8 @@ export interface TriageRecord {
   tag?: string;
   /** The user moved the item to another group than triage chose. */
   overridden?: boolean;
-  /** How hard the fix looks: "simple" or "complex". */
+  /** How hard the fix looks: "quick", "standard" or "complex" ("simple" from before means standard). */
   complexity?: string;
-  /** The local model that screened this item as needing a person, when Claude did not triage it. */
-  screenedBy?: string | null;
-  /** The local model that did all of this item's triage. */
-  triagedBy?: string | null;
   /** Earlier fixes, newest last, for an item that came back to the board. */
   history?: ItemFix[];
   /** The item this one sits under, such as the PBI a "Dev" task belongs to. */
@@ -167,6 +175,10 @@ export interface TestRun {
 
 export interface ItemFix {
   status: ItemFixStatus;
+  /** The other items fixed with this one, in one branch and pull request. */
+  batch?: number[];
+  /** On an item fixed in another's batch: the item whose fix this is a copy of. */
+  batchLead?: number | null;
   automatic: boolean;
   /** The queued or running work addresses comments on the pull request. */
   feedback: boolean;

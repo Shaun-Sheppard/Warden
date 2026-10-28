@@ -68,23 +68,31 @@ pub struct Settings {
     pub review_model: String,
     pub triage_model: String,
     /// Fixes triage rates simple, and complex ones (and items that came back).
+    /// Quick fixes (stored under the name simple fixes had before).
     pub fix_model_simple: String,
+    pub fix_model_standard: String,
     pub fix_model_complex: String,
     /// The effort for each kind of work (`low` … `max`); empty for the default.
     pub review_effort: String,
     pub triage_effort: String,
     pub fix_effort_simple: String,
+    pub fix_effort_standard: String,
     pub fix_effort_complex: String,
-    /// A simple fix that fails is tried once more with the complex model.
+    /// Only read from older settings: the one "Fix automatically" choice for every
+    /// project, which each project now has for itself (`ProjectConfig::auto_fix_scope`).
+    #[serde(default)]
+    pub auto_fix_scope: String,
+    /// The triage feature as a whole, from Settings → Triage. Unset in settings from
+    /// before the switch existed: on if any project was triaged then (so this field
+    /// defaults to unset, not to the new-install default of off).
+    #[serde(default)]
+    pub triage_on: Option<bool>,
+    /// How Claude goes about a fix; the built-in instructions when empty.
+    pub fix_prompt: String,
+    /// How Claude goes about fixing several items together; built-in when empty.
+    pub batch_prompt: String,
+    /// A fix that fails is tried once more with the next level's model.
     pub fix_escalate: bool,
-    /// Screen items with a model on this computer (Ollama) first: ones it is
-    /// sure need a person skip Claude's triage.
-    pub local_pretriage: bool,
-    pub local_url: String,
-    pub local_model: String,
-    /// The local model does all of triage, from the item's text alone, and
-    /// Claude is not used for triage at all.
-    pub local_triage_only: bool,
     /// Everything configured per project: review, triage and its areas.
     /// `projects`, `people`, `triage_projects` and `area_mappings` above are only
     /// read once, to move older settings into these (see `normalise`).
@@ -108,8 +116,13 @@ pub struct ProjectConfig {
     pub delete_source_branch: bool,
     /// Triage the work items assigned to the user on this project's board.
     pub triage: bool,
-    /// Fix the items triage marks for an AI agent without being asked.
+    /// Only read from older settings: fix items without being asked. Replaced
+    /// by `auto_fix_scope`.
     pub auto_fix: bool,
+    /// Which items are fixed without being asked: `none`, `quick`, or `standard`
+    /// for quick and standard. Unset in settings from before it existed.
+    #[serde(default)]
+    pub auto_fix_scope: Option<String>,
     /// Only items in the current sprint.
     pub current_sprint: bool,
     /// Tag triaged items and comment on the ones for a person.
@@ -133,6 +146,7 @@ impl Default for ProjectConfig {
             delete_source_branch: false,
             triage: false,
             auto_fix: false,
+            auto_fix_scope: Some("none".to_string()),
             current_sprint: true,
             post_results: false,
             states: vec!["To Do".to_string(), "New".to_string()],
@@ -167,6 +181,7 @@ impl Settings {
                     delete_source_branch: self.delete_source_branch,
                     triage: self.triage_enabled && triaged,
                     auto_fix: self.triage_auto_fix,
+                    auto_fix_scope: None,
                     current_sprint: self.triage_current_sprint,
                     post_results: self.triage_post_results,
                     states: self.triage_states.clone(),
@@ -186,7 +201,24 @@ impl Settings {
                 area.project = config.name.clone();
             }
         }
-        self.triage_enabled = self.project_configs.iter().any(|c| c.triage);
+        let triaged = self.project_configs.iter().any(|c| c.triage);
+        let on = *self.triage_on.get_or_insert(triaged);
+        self.triage_enabled = on && triaged;
+        // "Fix automatically" moved from one choice for every project to a choice per
+        // project: a project that had it on keeps the old choice (quick fixes, from before
+        // there was one).
+        let global = match self.auto_fix_scope.as_str() {
+            "none" | "quick" | "standard" => self.auto_fix_scope.clone(),
+            _ => "quick".to_string(),
+        };
+        for config in &mut self.project_configs {
+            let scope = config.auto_fix_scope.get_or_insert_with(|| if config.auto_fix { global.clone() } else { "none".to_string() });
+            if !matches!(scope.as_str(), "none" | "quick" | "standard") {
+                *scope = "none".to_string();
+            }
+            config.auto_fix = false;
+        }
+        self.auto_fix_scope.clear();
         // Triage had a pause of its own; the one pause in the sidebar now covers everything.
         self.triage_paused = false;
     }
@@ -213,7 +245,17 @@ impl Settings {
 
     /// Whether a project fixes items automatically.
     pub fn auto_fixes(&self, project: &str) -> bool {
-        self.project(project).is_some_and(|c| c.triage && c.auto_fix)
+        self.triage_enabled && self.project(project).is_some_and(|c| c.triage && c.auto_fix_scope.as_deref().is_some_and(|s| s != "none"))
+    }
+
+    /// Whether a project's "Fix automatically" takes items at a level: none with
+    /// `none`, quick with `quick`, quick and standard with `standard`; complex never.
+    pub fn auto_fixes_level(&self, project: &str, level: &str) -> bool {
+        match self.project(project).and_then(|c| c.auto_fix_scope.as_deref()).unwrap_or("none") {
+            "quick" => level == "quick",
+            "standard" => level == "quick" || level == "standard",
+            _ => false,
+        }
     }
 }
 
@@ -280,16 +322,18 @@ impl Default for Settings {
             review_model: "opus".to_string(),
             triage_model: "sonnet".to_string(),
             fix_model_simple: "sonnet".to_string(),
+            fix_model_standard: "opus".to_string(),
             fix_model_complex: "opus".to_string(),
             fix_escalate: true,
             review_effort: String::new(),
             triage_effort: String::new(),
             fix_effort_simple: String::new(),
-            fix_effort_complex: String::new(),
-            local_pretriage: false,
-            local_url: "http://localhost:11434".to_string(),
-            local_model: String::new(),
-            local_triage_only: false,
+            fix_effort_standard: String::new(),
+            fix_effort_complex: "high".to_string(),
+            auto_fix_scope: String::new(),
+            triage_on: Some(false),
+            fix_prompt: String::new(),
+            batch_prompt: String::new(),
         }
     }
 }
@@ -552,19 +596,10 @@ pub struct TriageRecord {
     /// The user moved the item to another group than triage chose.
     #[serde(default)]
     pub overridden: bool,
-    /// How hard the fix looks: `simple` or `complex`, from triage or the user.
+    /// How hard the fix looks: `quick`, `standard` or `complex`, from triage or the
+    /// user (`simple` from before means standard).
     #[serde(default)]
     pub complexity: String,
-    /// The local model that screened this item as needing a person, when
-    /// Claude did not triage it.
-    #[serde(default)]
-    pub screened_by: Option<String>,
-    /// The local model that did all of this item's triage, when Claude did not.
-    #[serde(default)]
-    pub triaged_by: Option<String>,
-    /// The next triage goes straight to Claude ("Triage again").
-    #[serde(default)]
-    pub claude_only: bool,
     /// Earlier fixes, newest last, for an item that came back to the board
     /// after being fixed (failed testing, say).
     #[serde(default)]
@@ -614,6 +649,13 @@ pub struct TestRun {
 #[serde(rename_all = "camelCase")]
 pub struct ItemFix {
     pub status: ItemFixStatus,
+    /// The other items fixed with this one, in one branch and pull request.
+    #[serde(default)]
+    pub batch: Vec<u64>,
+    /// On an item fixed as part of another's batch: the item whose fix it is.
+    /// Its fix is a copy of that one's, kept up to date.
+    #[serde(default)]
+    pub batch_lead: Option<u64>,
     /// Started without being asked, by auto-fix.
     #[serde(default)]
     pub automatic: bool,
@@ -648,6 +690,9 @@ pub struct ItemFix {
     pub moved_to: Option<String>,
     #[serde(default)]
     pub moved_from: Option<String>,
+    /// For a batch: where each item was before the fix moved it, to go back to.
+    #[serde(default)]
+    pub batch_from: Vec<(u64, String)>,
     /// Where the pull request's review stands: open, approved, rejected,
     /// waiting (for the author), completed or abandoned.
     #[serde(default)]
@@ -730,7 +775,40 @@ pub struct TriageState {
     pub fix_problem: Option<String>,
 }
 
+impl TriageRecord {
+    /// The board column an item belongs in by difficulty: `quick`, `standard` or
+    /// `complex`. Items for a person are complex, whatever else was said.
+    pub fn level(&self) -> &'static str {
+        if self.recommendation.as_deref() == Some("human") {
+            return "complex";
+        }
+        match self.complexity.trim().to_lowercase().as_str() {
+            "quick" => "quick",
+            "complex" => "complex",
+            _ => "standard",
+        }
+    }
+}
+
 impl TriageState {
+    /// Copies each batch fix onto the other items in its batch, so they show
+    /// and follow the same fix. An item that has left its batch (it came back
+    /// and was triaged again, say) is not touched.
+    pub fn sync_batches(&mut self) {
+        let leads: Vec<(u64, ItemFix)> = self
+            .records
+            .iter()
+            .filter_map(|r| r.fix.as_ref().filter(|f| f.batch_lead.is_none() && !f.batch.is_empty()).map(|f| (r.id, f.clone())))
+            .collect();
+        for (lead, fix) in leads {
+            for r in self.records.iter_mut().filter(|r| fix.batch.contains(&r.id)) {
+                if r.fix.as_ref().is_some_and(|f| f.batch_lead == Some(lead)) {
+                    r.fix = Some(ItemFix { batch_lead: Some(lead), ..fix.clone() });
+                }
+            }
+        }
+    }
+
     /// The state as the window needs it: without fixes' diffs, which are large
     /// and only shown when asked for (`fix_diff`).
     pub fn without_diffs(mut self) -> Self {

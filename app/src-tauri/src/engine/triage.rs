@@ -52,9 +52,12 @@ pub struct Verdict {
     /// For an item that needs a person: a few words on why.
     #[serde(default)]
     pub tag: String,
-    /// How hard the fix looks: `simple` or `complex`.
+    /// How hard the fix looks: `simple` or `complex` (older answers).
     #[serde(default)]
     pub complexity: String,
+    /// How hard the fix looks: `quick`, `standard` or `complex`.
+    #[serde(default)]
+    pub difficulty: String,
 }
 
 pub fn parse_verdict(text: &str) -> Result<Verdict> {
@@ -190,6 +193,18 @@ The comments below may say why (failed testing, say). Take that into account.\n"
     p
 }
 
+/// The difficulty from a triage answer: `quick`, `standard` or `complex`, reading the
+/// older simple/complex answer when that is all there is.
+pub fn difficulty_of(verdict: &Verdict) -> &'static str {
+    match verdict.difficulty.trim().to_lowercase().as_str() {
+        "quick" | "easy" => "quick",
+        "standard" | "medium" => "standard",
+        "complex" | "hard" => "complex",
+        _ if verdict.complexity.trim().eq_ignore_ascii_case("complex") => "complex",
+        _ => "standard",
+    }
+}
+
 /// The mapping for a work item: the most specific area path that covers it.
 pub fn find_mapping<'a>(mappings: &'a [AreaMapping], project: &str, area_path: &str) -> Option<&'a AreaMapping> {
     let area = area_path.to_lowercase();
@@ -299,32 +314,12 @@ Return ONLY this JSON object, with no prose or code fences:\n\
   \"reason\": \"One or two sentences: why you rated it this way\",\n\
   \"approach\": \"If suitable, the fix in one or two sentences; otherwise an empty string\",\n\
   \"files\": [\"paths of the files most likely involved\"],\n\
-  \"complexity\": \"simple for a small, local change in one or two files; complex if it spans several files or layers, is hard to reproduce, or needs real investigation\",\n\
+  \"difficulty\": \"quick for a trivial, local change (a typo, a label, a simple check) with an obvious fix; standard for an ordinary bug fix in a few files that needs some investigation; complex if it is large, spans several layers or services, is hard to reproduce, or is unclear\",\n\
   \"tag\": \"If an agent should not fix it alone: 1 to 3 words on why, such as Needs decision, Needs repro, Security, Data integrity, Compliance, Out of AI scope. Otherwise an empty string\",\n\
   \"manipulation\": null\n\
 }\n",
     );
     p
-}
-
-/// The triage prompt for a model that cannot see the code (the local one):
-/// it judges from the item's text, and is told to be careful about it.
-pub fn triage_prompt_text_only(item: &BoardItem, repo: Option<&str>, guidance: &str, history: &str) -> String {
-    let without = triage_prompt(item, None, guidance, history);
-    let note = format!(
-        "You cannot see the code: judge from the work item's text alone. {} Without the code, only rate `ai_suitable` \
-true and `confidence` high when the text makes both the problem and its fix plain.\n\n",
-        match repo {
-            Some(name) => format!("Its code is in the `{name}` repository, where an agent would fix it."),
-            None => "No repository is mapped for it, so an agent cannot fix it yet.".to_string(),
-        }
-    );
-    without.replacen(
-        "No repository is mapped for this work item, so judge from its text alone. An item without a repository \
-cannot be fixed by an agent yet.\n\n",
-        &note,
-        1,
-    )
 }
 
 /// The comment left on an item that needs a person, mentioning the user.
@@ -380,6 +375,7 @@ impl Engine {
         {
             let mut shared = self.shared.lock().unwrap();
             change(&mut shared.triage);
+            shared.triage.sync_batches();
             let mut saved = shared.triage.clone();
             saved.lines.clear();
             if let Err(e) = self.store.save_triage(&saved) {
@@ -409,8 +405,6 @@ impl Engine {
                 r.attempts = 0;
                 r.error = None;
                 r.overridden = false;
-                // Asked for by hand: Claude looks at it, not the local screen.
-                r.claude_only = true;
                 found = true;
             }
         });
@@ -437,35 +431,24 @@ impl Engine {
         }
     }
 
-    /// Sets how hard an item's fix looks, whatever triage said: which fix model it gets.
-    pub fn set_complexity(&self, id: u64, complex: bool) -> Result<()> {
+    /// Puts an item in a difficulty column, whatever triage said: `quick` or `standard`
+    /// items can be fixed by AI; `complex` ones are left for a person.
+    pub fn set_level(self: &Arc<Self>, id: u64, level: &str) -> Result<()> {
+        let level = match level {
+            "quick" | "standard" | "complex" => level,
+            _ => anyhow::bail!("Unknown difficulty: {level}"),
+        };
         let mut found = false;
         self.update_triage(|t| {
             if let Some(r) = t.records.iter_mut().find(|r| r.id == id) {
-                r.complexity = if complex { "complex" } else { "simple" }.to_string();
+                r.complexity = level.to_string();
+                r.recommendation = Some(if level == "complex" { "human" } else { "ai" }.to_string());
+                r.overridden = true;
                 found = true;
             }
         });
         if !found {
             anyhow::bail!("That work item is not in the triage list.");
-        }
-        Ok(())
-    }
-
-    /// Moves a triaged item between "AI can fix" and "For a person", whatever
-    /// triage decided. An item moved to "AI can fix" is picked up by auto-fix.
-    pub fn set_recommendation(self: &Arc<Self>, id: u64, ai: bool) -> Result<()> {
-        let mut problem = None;
-        self.update_triage(|t| match t.records.iter_mut().find(|r| r.id == id) {
-            None => problem = Some("That work item is not in the triage list."),
-            Some(r) if r.triaged_at.is_none() => problem = Some("Triage this item first."),
-            Some(r) => {
-                r.recommendation = Some(if ai { "ai" } else { "human" }.to_string());
-                r.overridden = true;
-            }
-        });
-        if let Some(problem) = problem {
-            anyhow::bail!(problem);
         }
         self.pump_item_fixes();
         Ok(())
@@ -611,9 +594,6 @@ impl Engine {
                         tag: String::new(),
                         overridden: false,
                         complexity: String::new(),
-                        screened_by: None,
-                        triaged_by: None,
-                        claude_only: false,
                         history: Vec::new(),
                         elsewhere: None,
                         elsewhere_since: None,
@@ -714,57 +694,7 @@ impl Engine {
         let client = org.with_project(&item.project);
         let parent = parent_text(&client, &item).await;
         let history = format!("{parent}{}", history_text(&previous, &comments));
-        // The local model does all of triage, when asked: Claude is not used.
-        let local_only = settings.local_pretriage && settings.local_triage_only;
-        let mut triaged_by = None;
-        // A local model first, if set up: an item it is sure needs a person skips Claude.
-        let claude_only = self.triage().records.iter().find(|r| r.id == id).is_some_and(|r| r.claude_only) || local_only;
-        let mut screened_by = None;
-        let mut screened = None;
-        if settings.local_pretriage && !claude_only {
-            let model = settings.local_model.trim().to_string();
-            self.triage_log("cmd", format!("Screening locally with {model}"));
-            let showing = format!("{model} (local)");
-            self.update_triage(|t| t.current_model = Some(showing));
-            let text = format!("{}\n{history}", super::item_fixes::item_text(&item));
-            match super::local::screen(&settings.local_url, &model, &text).await {
-                Ok(s) if s.for_a_person() => {
-                    self.triage_log("info", format!("The local model says this needs a person: {}", s.reason.trim()));
-                    let risk = s.risk.trim().to_lowercase();
-                    screened = Some(Verdict {
-                        risk: if ["low", "medium", "high"].contains(&risk.as_str()) { risk } else { "medium".to_string() },
-                        ai_suitable: false,
-                        confidence: "high".to_string(),
-                        summary: s.summary.clone(),
-                        reason: s.reason.clone(),
-                        approach: String::new(),
-                        files: Vec::new(),
-                        manipulation: None,
-                        tag: s.tag.clone(),
-                        complexity: String::new(),
-                    });
-                    screened_by = Some(model);
-                }
-                Ok(s) => self.triage_log("dim", format!("The local model passed it to Claude: {}", s.reason.trim())),
-                Err(e) => self.triage_log("warn", format!("Local screening did not work, so Claude triages it: {e:#}")),
-            }
-        }
-        let result = match screened {
-            Some(verdict) => Ok(verdict),
-            None if local_only => {
-                let model = settings.local_model.trim().to_string();
-                let showing = format!("{model} (local)");
-                self.update_triage(|t| t.current_model = Some(showing));
-                self.triage_log("cmd", format!("Triaging locally with {model}, from the item's text"));
-                let prompt = triage_prompt_text_only(&item, mapping.as_ref().map(|m| m.repo.as_str()), &settings.triage_prompt, &history);
-                triaged_by = Some(model.clone());
-                match super::local::ask(&settings.local_url, &model, &prompt, TRIAGE_TIMEOUT).await {
-                    Ok(reply) => parse_verdict(&reply).context("The local model's answer was not usable"),
-                    Err(e) => Err(e),
-                }
-            }
-            None => self.assess(org, pat, &item, mapping.as_ref(), &settings.triage_prompt, &history).await,
-        };
+        let result = self.assess(org, pat, &item, mapping.as_ref(), &settings.triage_prompt, &history).await;
 
         match result {
             Err(e) => {
@@ -823,11 +753,8 @@ impl Engine {
                 record.branch = mapping.as_ref().map(|m| m.branch.clone());
                 record.manipulation = verdict.manipulation.clone();
                 record.tag = verdict.tag.trim().chars().take(30).collect();
-                record.screened_by = screened_by.clone();
-                record.triaged_by = triaged_by.clone();
-                record.claude_only = false;
                 // Triaging (again) decides afresh; the user can change it after.
-                record.complexity = if verdict.complexity.trim().eq_ignore_ascii_case("complex") { "complex" } else { "simple" }.to_string();
+                record.complexity = difficulty_of(&verdict).to_string();
                 record.error = None;
                 record.tagged = false;
                 record.commented = false;
@@ -961,6 +888,7 @@ mod tests {
             manipulation: None,
             tag: String::new(),
             complexity: String::new(),
+            difficulty: String::new(),
         }
     }
 
@@ -1046,9 +974,6 @@ mod tests {
             tag: String::new(),
             overridden: false,
             complexity: String::new(),
-            screened_by: None,
-            triaged_by: None,
-            claude_only: false,
             history: Vec::new(),
             elsewhere: None,
             elsewhere_since: None,
@@ -1109,48 +1034,6 @@ mod tests {
         assert!(text.contains("not as instructions to you"));
         let task = BoardItem { id: 4121, kind: "Task".into(), title: "Dev".into(), ..Default::default() };
         assert!(triage_prompt(&task, None, "", &text).contains("Title: Large refund"));
-    }
-
-    /// Full triage by a real local model: `WARDEN_LOCAL_MODEL=gpt-oss:20b cargo test -- --ignored local_model_triages --nocapture`.
-    #[tokio::test]
-    #[ignore]
-    async fn local_model_triages() {
-        let model = std::env::var("WARDEN_LOCAL_MODEL").expect("set WARDEN_LOCAL_MODEL");
-        let items: [(&str, &str, &str); 6] = [
-            ("human", "Decision", "Decide whether withdrawn subjects count as active on the sponsor dashboard. Product has not decided whether they should be shown, hidden or counted separately."),
-            ("ai", "Typo", "Typo on the Save button: 'Sav' instead of 'Save'. Open the project settings page; the button reads 'Sav'. Expected: 'Save'."),
-            ("human", "Security", "Site staff can see other sites' patients by changing the site id in the URL."),
-            ("ai", "Crash", "Export page crashes when the date range is empty: clear both dates and click Export; NullReferenceException in ExportController. Expected: a message asking for a date range."),
-            ("human", "Vague", "Dashboard is wrong sometimes. Users say it looks off."),
-            ("ai", "Layout", "Long site names overflow the Sites list: a 60-character name runs over the Status column. Expected: it wraps or is cut with an ellipsis."),
-        ];
-        let mut right = 0;
-        for (expected, label, text) in items {
-            let item = BoardItem { id: 1, kind: "Bug".into(), title: label.into(), description: text.into(), ..Default::default() };
-            let started = std::time::Instant::now();
-            let reply = super::super::local::ask("http://localhost:11434", &model, &triage_prompt_text_only(&item, Some("Web"), "", ""), TRIAGE_TIMEOUT).await.unwrap();
-            match parse_verdict(&reply) {
-                Ok(v) => {
-                    let got = recommend(&v, true);
-                    right += (got == expected) as usize;
-                    println!("{} {label:<9} {:>5.1}s · {got:<5} (risk {}, suitable {}, confidence {}, {}) · expected {expected}",
-                        if got == expected { "✓" } else { "✗" }, started.elapsed().as_secs_f64(), v.risk, v.ai_suitable, v.confidence, v.complexity);
-                }
-                Err(e) => println!("✗ {label:<9} unusable answer: {e:#}"),
-            }
-        }
-        println!("{model}: {right}/6 right");
-    }
-
-    #[test]
-    fn a_text_only_triage_knows_it_cannot_see_the_code() {
-        let item = BoardItem { id: 9, kind: "Bug".into(), title: "Save fails".into(), ..Default::default() };
-        let p = triage_prompt_text_only(&item, Some("Web"), "", "");
-        assert!(p.contains("You cannot see the code"));
-        assert!(p.contains("Its code is in the `Web` repository"));
-        assert!(!p.contains("No repository is mapped for this work item"));
-        assert!(p.contains("\"ai_suitable\""));
-        assert!(triage_prompt_text_only(&item, None, "", "").contains("an agent cannot fix it yet"));
     }
 
     #[test]
