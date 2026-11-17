@@ -456,13 +456,21 @@ function projectSummary(c: ProjectConfig, triageOn: boolean) {
 }
 
 /** Everything for one project in one place: its pull request reviews, its board triage and its areas. */
-function ProjectCard({ config: c, organization, open, triageOn, onToggle, onChange, onRemove }: {
-  config: ProjectConfig; organization: string; open: boolean; triageOn: boolean; onToggle: () => void;
-  onChange: (patch: Partial<ProjectConfig>) => void; onRemove: () => void;
+function ProjectCard({ config: c, organization, open, triageOn, available, onToggle, onChange, onRemove, onRename }: {
+  config: ProjectConfig; organization: string; open: boolean; triageOn: boolean; available: string[]; onToggle: () => void;
+  onChange: (patch: Partial<ProjectConfig>) => void; onRemove: () => void; onRename: (name: string) => Promise<void>;
 }) {
   const [people, setPeople] = useState<string[]>([]);
   const [choices, setChoices] = useState<TriageChoices | null>(null);
   const [removing, setRemoving] = useState(false);
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const rename = () => {
+    const name = renaming?.trim() ?? "";
+    if (!name || name === c.name) { setRenaming(null); return; }
+    const exact = available.find((p) => p.toLowerCase() === name.toLowerCase()) ?? name;
+    onRename(exact).then(() => { setRenaming(null); setRenameError(null); }, (e) => setRenameError(String(e)));
+  };
   useEffect(() => {
     if (!open || !organization) return;
     let live = true;
@@ -490,8 +498,24 @@ function ProjectCard({ config: c, organization, open, triageOn, onToggle, onChan
           {c.triage && triageOn && <span className={`tpill ${incomplete ? "tpill-major" : "tpill-ok"}`}>{incomplete ? "Triage · finish setup" : "Triage"}</span>}
           {!c.review && !(c.triage && triageOn) && <span className="tpill tpill-neutral">Off</span>}
         </span>
-        <button className="map-remove" aria-label={`Remove ${c.name}`} title="Remove project" onClick={() => setRemoving(true)}>×</button>
+        <button className="map-remove map-rename" aria-label={`Rename ${c.name}`} title="Rename project" onClick={() => { setRenaming(c.name); setRenameError(null); setRemoving(false); }}>✎</button>
+        <button className="map-remove" aria-label={`Remove ${c.name}`} title="Remove project" onClick={() => { setRemoving(true); setRenaming(null); }}>×</button>
       </div>
+      {renaming !== null && (
+        <div className="map-section">
+          <div className="field"><span>New name</span>
+            <div className="inline">
+              <input className="input" autoFocus list={`rename-options-${c.name}`} value={renaming} aria-label={`New name for ${c.name}`}
+                onChange={(e) => setRenaming(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") rename(); if (e.key === "Escape") setRenaming(null); }} />
+              <datalist id={`rename-options-${c.name}`}>{available.map((p) => <option key={p} value={p} />)}</datalist>
+              <button className="btn primary" disabled={!renaming.trim() || renaming.trim() === c.name} onClick={rename}>Rename</button>
+              <button className="btn ghost" onClick={() => setRenaming(null)}>Cancel</button>
+            </div>
+            <span className="help">For a project renamed in Azure DevOps. Its settings, area paths, reviews and board items move to the new name; nothing is changed in Azure DevOps.</span>
+            {renameError && <span className="help tone-critical" role="alert">{renameError}</span>}
+          </div>
+        </div>
+      )}
       {removing && (
         <div className="map-section">
           <div className="warning tint-major" role="alertdialog">
@@ -601,7 +625,11 @@ function ProjectsSettings({ settings, change, triageOn }: { settings: Settings; 
     <div className="map-list">
       {configs.length === 0 && <div className="note-box"><b>No projects yet</b><p>Add a project to review its pull requests or triage its board.</p></div>}
       {configs.map((c) => (
-        <ProjectCard key={c.name} config={c} organization={settings.organization} open={opened.has(c.name)} triageOn={triageOn}
+        <ProjectCard key={c.name} config={c} organization={settings.organization} open={opened.has(c.name)} triageOn={triageOn} available={available}
+          onRename={(name) => api.renameProject(c.name, name).then((saved) => {
+            change({ projectConfigs: saved.projectConfigs });
+            setOpened((o) => { const next = new Set(o); if (next.delete(c.name)) next.add(name); return next; });
+          })}
           onToggle={() => setOpened((o) => { const next = new Set(o); if (!next.delete(c.name)) next.add(c.name); return next; })}
           onChange={(patch) => set(c.name, patch)}
           onRemove={() => change({ projectConfigs: configs.filter((x) => x.name !== c.name) })} />

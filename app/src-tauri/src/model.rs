@@ -777,9 +777,11 @@ pub struct TriageState {
 
 impl TriageRecord {
     /// The board column an item belongs in by difficulty: `quick`, `standard` or
-    /// `complex`. Items for a person are complex, whatever else was said.
+    /// `complex`. Risk does not move an item (it only keeps it from being fixed
+    /// automatically), but one an agent cannot take on is complex: no repository,
+    /// suspicious text, or a business decision still to make.
     pub fn level(&self) -> &'static str {
-        if self.recommendation.as_deref() == Some("human") {
+        if self.recommendation.as_deref() == Some("human") && self.blocked() {
             return "complex";
         }
         match self.complexity.trim().to_lowercase().as_str() {
@@ -787,6 +789,11 @@ impl TriageRecord {
             "complex" => "complex",
             _ => "standard",
         }
+    }
+
+    /// Whether an agent cannot fix the item, however small the change.
+    fn blocked(&self) -> bool {
+        self.repo.is_none() || self.manipulation.is_some() || self.tag.trim().eq_ignore_ascii_case("needs decision")
     }
 }
 

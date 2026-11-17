@@ -30,9 +30,9 @@ const COLUMN_LIMIT = 50;
 const RUNNING: ItemFix["status"][] = ["fixing", "testing", "pushing"];
 const BUSY: ItemFix["status"][] = ["queued", ...RUNNING];
 
-/** How hard an item looks to fix. Items for a person are complex, whatever else triage said. */
+/** How hard an item looks to fix. Risk doesn't move an item, but one an agent can't take on is complex. */
 function levelOf(r: TriageRecord): Level {
-  if (r.recommendation === "human") return "complex";
+  if (r.recommendation === "human" && (!r.repo || r.manipulation || r.tag?.toLowerCase() === "needs decision")) return "complex";
   return r.complexity === "quick" ? "quick" : r.complexity === "complex" ? "complex" : "standard";
 }
 
@@ -842,7 +842,6 @@ export function Triage({ triage, now, autoFix, paused, onSettings, project, onPr
   return (
     <div className="triage">
       <PageHeader title="Board triage"
-        crumbs={<><span>Triage</span><span className="tone-faint" style={{ background: "none", padding: 0 }}>/</span><span className="here">{view === "list" ? "List" : "Board"}</span></>}
         sub={`${onBoard} item${onBoard === 1 ? "" : "s"} assigned to you in a to-do state${inProject ? ` in ${inProject}` : ""}${triage.lastCheck ? ` · boards checked ${ago(triage.lastCheck, now)}` : ""}`}>
         <SearchBox className="triage-search" value={query} onChange={setQuery} placeholder="Find PR number, item or title…" />
         {failedFixes > 0 && !triage.fixProblem && (

@@ -314,7 +314,7 @@ Return ONLY this JSON object, with no prose or code fences:\n\
   \"reason\": \"One or two sentences: why you rated it this way\",\n\
   \"approach\": \"If suitable, the fix in one or two sentences; otherwise an empty string\",\n\
   \"files\": [\"paths of the files most likely involved\"],\n\
-  \"difficulty\": \"quick for a trivial, local change (a typo, a label, a simple check) with an obvious fix; standard for an ordinary bug fix in a few files that needs some investigation; complex if it is large, spans several layers or services, is hard to reproduce, or is unclear\",\n\
+  \"difficulty\": \"how big the change is, whatever the risk: quick for a small, local change (a typo, a label, a simple check, a log level) with an obvious fix; standard for an ordinary bug fix in a few files that needs some investigation; complex only if it is large, spans several layers or services, or needs a redesign. A sensitive area makes it risky, not complex\",\n\
   \"tag\": \"If an agent should not fix it alone: 1 to 3 words on why, such as Needs decision, Needs repro, Security, Data integrity, Compliance, Out of AI scope. Otherwise an empty string\",\n\
   \"manipulation\": null\n\
 }\n",

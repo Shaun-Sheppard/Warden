@@ -11,6 +11,8 @@ import type { ClaudeStatus, Connection, Fix, HistoryRecord, Legacy, Live, Projec
 export interface Api {
   getSettings(): Promise<Settings>;
   saveSettings(settings: Settings): Promise<Settings>;
+  /** Renames a project after it was renamed in Azure DevOps, everywhere Warden has it. */
+  renameProject(old: string, name: string): Promise<Settings>;
   getLive(): Promise<Live>;
   getHistory(): Promise<HistoryRecord[]>;
   checkNow(): Promise<void>;
@@ -86,6 +88,7 @@ function subscribe<T>(event: string, handler: (payload: T) => void): () => void 
 const tauriApi: Api = {
   getSettings: () => invoke("get_settings"),
   saveSettings: (settings) => invoke("save_settings", { settings }),
+  renameProject: (old, name) => invoke("rename_project", { old, new: name }),
   getLive: () => invoke("get_live"),
   getHistory: () => invoke("get_history"),
   checkNow: () => invoke("check_now"),

@@ -14,7 +14,7 @@
   --shadow: 0 1px 2px rgba(23, 26, 60, 0.04), 0 8px 24px rgba(23, 26, 60, 0.05);
   --shadow-pop: 0 12px 32px rgba(23, 26, 60, 0.14), 0 2px 6px rgba(23, 26, 60, 0.06);
   --seg-on: #ffffff; --seg-sh: 0 1px 3px rgba(23, 26, 60, 0.1);
-  --col: rgba(255, 255, 255, 0.6); --col-edge: #ffffff; --bar-bg: #171a2b;
+  --col: rgba(255, 255, 255, 0.72); --col-edge: #ffffff; --bar-bg: #171a2b;
 }
 [data-theme="dark"] {
   --win: #0e1018; --panel: #181b27; --raise: #1f2333; --field: #1f2333; --soft: #252a3c; --well: #10131d;
@@ -31,7 +31,7 @@
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.25);
   --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.25);
   --seg-on: #2a2f44; --seg-sh: 0 1px 3px rgba(0, 0, 0, 0.3);
-  --col: rgba(255, 255, 255, 0.035); --col-edge: #232838; --bar-bg: #0a0c14;
+  --col: rgba(24, 27, 39, 0.4); --col-edge: #232838; --bar-bg: #0a0c14;
 }
 
 * { box-sizing: border-box; }
@@ -49,7 +49,13 @@ input::placeholder, textarea::placeholder { color: var(--faint); }
 *::-webkit-scrollbar-thumb { background: var(--dash); border-radius: 10px; border: 3px solid var(--win); }
 
 /* The window: a floating sidebar and the page beside it, on a grey ground. */
-.app { display: flex; height: 100%; gap: 14px; padding: 14px; }
+.app { display: flex; height: 100%; gap: 14px; padding: 14px; position: relative; isolation: isolate; }
+/* In the light theme, a soft photograph behind everything, faded well back. */
+:root:not([data-theme="dark"]) .app::before { content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background: url("./assets/backdrop.jpg") center / cover no-repeat; opacity: 0.7; }
+/* In the dark theme, a dark photograph whose glowing edges show through. */
+[data-theme="dark"] .app::before { content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background: url("./assets/backdrop-dark.jpg") center / cover no-repeat; opacity: 0.55; }
 
 /* Sidebar */
 .sidebar { width: 252px; flex: none; background: var(--panel); border-radius: 22px; box-shadow: var(--shadow); display: flex; flex-direction: column; padding: 14px; overflow: hidden; }
@@ -196,7 +202,8 @@ input::placeholder, textarea::placeholder { color: var(--faint); }
 .row-between { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
 
 /* PR reviews: a table grouped by day */
-.table-card { background: var(--panel); border-radius: 22px; box-shadow: var(--shadow); padding: 8px 8px 12px; }
+/* See-through like the triage board's columns, so the background shows faintly. */
+.table-card { background: var(--col); border: 1px solid var(--col-edge); border-radius: 22px; padding: 8px 8px 12px; }
 .table-head { display: grid; gap: 16px; align-items: center; padding: 10px 16px; font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); }
 .table-group { margin-top: 6px; }
 .table-group-head { display: flex; align-items: center; gap: 10px; padding: 10px 16px; background: var(--raise); border-radius: 12px; font-size: 14px; font-weight: 700; }
@@ -335,12 +342,15 @@ textarea.prompt { height: 260px; padding: 12px; line-height: 1.65; resize: verti
 .map-card { background: var(--panel); border: 1px solid var(--edge); border-radius: 16px; overflow: hidden; }
 .map-card.open { border-color: var(--accent-edge); }
 .map-head { display: grid; grid-template-columns: minmax(0, 1fr) auto 32px; align-items: center; gap: 12px; padding-right: 12px; }
+.project-card > .map-head { grid-template-columns: minmax(0, 1fr) auto 32px 32px; gap: 8px; }
 .map-head:hover { background: var(--row-hover); }
 .map-toggle { display: grid; grid-template-columns: 14px minmax(0, 1fr); align-items: center; gap: 14px; padding: 14px 0 14px 18px; text-align: left; min-width: 0; }
 .map-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 14px; font-weight: 700; overflow-wrap: anywhere; }
 .map-branch { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 11px; color: var(--muted); background: var(--soft); border-radius: 7px; padding: 1px 7px; font-weight: 500; }
 .map-remove { width: 32px; height: 32px; border-radius: 9px; color: var(--faint); font-size: 18px; text-align: center; }
 .map-remove:hover { background: var(--critical-tint); color: var(--critical); }
+.map-rename { font-size: 15px; }
+.map-rename:hover { background: var(--well); color: var(--text); }
 .map-section { border-top: 1px solid var(--line); padding: 20px 22px; display: flex; flex-direction: column; gap: 14px; }
 .map-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
 .map-grid .field { min-width: 0; }

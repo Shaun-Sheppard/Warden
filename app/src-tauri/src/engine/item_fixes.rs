@@ -2034,10 +2034,16 @@ mod tests {
         assert_eq!(fix_model(&settings, &record), ("opus".to_string(), "standard"));
         record.complexity = "complex".into();
         assert_eq!(fix_model(&settings, &record), ("opus@high".to_string(), "complex"));
-        // An item left for a person is complex whatever triage said, and one that came
-        // back goes up a level.
+        // A risky item keeps its difficulty; one an agent cannot take on is complex,
+        // and one that came back goes up a level.
         record.complexity = "quick".into();
         record.recommendation = Some("human".into());
+        record.repo = Some("Web".into());
+        assert_eq!(fix_model(&settings, &record).1, "quick");
+        record.tag = "Needs decision".into();
+        assert_eq!(fix_model(&settings, &record).1, "complex");
+        record.tag.clear();
+        record.repo = None;
         assert_eq!(fix_model(&settings, &record).1, "complex");
         record.recommendation = Some("ai".into());
         record.history.push(new_fix(false));

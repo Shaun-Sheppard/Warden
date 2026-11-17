@@ -52,6 +52,20 @@ pub enum Change {
     Notify { title: String, body: String },
 }
 
+/// An Azure DevOps link with its project segment renamed.
+fn rename_in_url(url: &str, old: &str, new: &str) -> String {
+    let encoded = |s: &str| format!("/{}/", urlencoding::encode(s));
+    url.replacen(&encoded(old), &encoded(new), 1)
+}
+
+/// An area path with its root, the project's own name, renamed.
+fn rename_area(area: &str, old: &str, new: &str) -> String {
+    match area.strip_prefix(old) {
+        Some(rest) if rest.is_empty() || rest.starts_with('\\') => format!("{new}{rest}"),
+        _ => area.to_string(),
+    }
+}
+
 /// The notification shown when a review ends.
 pub fn finished_notice(record: &Record) -> (String, String) {
     let pr = format!("PR {}: {}", record.pr.id, record.pr.title);
@@ -355,6 +369,69 @@ impl Engine {
         self.store.save_settings(&settings)?;
         self.emit_live();
         self.wake.notify_one();
+        Ok(settings)
+    }
+
+    /// Renames a project after it was renamed in Azure DevOps: its settings, its
+    /// areas, and the reviews, fixes and board items that name it, links included.
+    pub fn rename_project(&self, old: &str, new: &str) -> Result<Settings> {
+        let new = new.trim();
+        anyhow::ensure!(!new.is_empty(), "Enter the project's new name");
+        anyhow::ensure!(!self.busy(), "Wait for the review or fix in progress to finish, then rename the project");
+        let mut settings = self.settings();
+        anyhow::ensure!(
+            !settings.project_configs.iter().any(|c| c.name.eq_ignore_ascii_case(new) && !c.name.eq_ignore_ascii_case(old)),
+            "There is already a project called {new}"
+        );
+        let config = settings
+            .project_configs
+            .iter_mut()
+            .find(|c| c.name == old)
+            .with_context(|| format!("There is no project called {old}"))?;
+        config.name = new.to_string();
+        for area in &mut config.areas {
+            area.project = new.to_string();
+            area.area_path = rename_area(&area.area_path, old, new);
+        }
+        {
+            let shared = self.shared.lock().unwrap();
+            anyhow::ensure!(
+                !shared.triage.records.iter().any(|r| r.project == old && r.status == TriageStatus::Triaging),
+                "Wait for triage to finish, then rename the project"
+            );
+        }
+        let settings = self.update_settings(settings)?;
+
+        let rename = |project: &mut String, url: &mut String| {
+            if project == old {
+                *project = new.to_string();
+                *url = rename_in_url(url, old, new);
+            }
+        };
+        {
+            let mut shared = self.shared.lock().unwrap();
+            for record in &mut shared.history {
+                rename(&mut record.pr.project, &mut record.pr.url);
+            }
+            self.store.save_history(&shared.history)?;
+            for fix in &mut shared.fixes {
+                rename(&mut fix.pr.project, &mut fix.pr.url);
+            }
+            self.store.save_fixes(&shared.fixes)?;
+        }
+        self.update_triage(|t| {
+            for record in &mut t.records {
+                if record.project == old {
+                    if let Some(fix) = record.fix.as_mut().and_then(|f| f.pr_url.as_mut()) {
+                        *fix = rename_in_url(fix, old, new);
+                    }
+                    record.area_path = rename_area(&record.area_path, old, new);
+                }
+                rename(&mut record.project, &mut record.url);
+            }
+        });
+        self.emit_history();
+        (self.notifier)(Change::Fixes(self.shared.lock().unwrap().fixes.clone()));
         Ok(settings)
     }
 
@@ -1475,5 +1552,39 @@ mod tests {
         settings.organization = "other".into();
         engine.update_settings(settings).unwrap();
         assert!(engine.shared.lock().unwrap().tracking.prs.is_empty());
+    }
+
+    #[test]
+    fn renaming_a_project_renames_it_everywhere() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = Engine::new(Store::new(tmp.path().to_path_buf()), Box::new(|_| {}));
+        let mut settings = engine.settings();
+        let area = AreaMapping { project: "Old One".into(), area_path: "Old One\\Web".into(), repo: "Web".into(), branch: "dev".into(), ..Default::default() };
+        settings.project_configs = vec![
+            ProjectConfig { name: "Old One".into(), areas: vec![area], ..Default::default() },
+            ProjectConfig { name: "Other".into(), ..Default::default() },
+        ];
+        engine.update_settings(settings).unwrap();
+        let record: TriageRecord = serde_json::from_value(serde_json::json!({
+            "id": 7, "project": "Old One", "kind": "Bug", "title": "t", "state": "New", "areaPath": "Old One\\Web\\Api",
+            "priority": null, "url": "https://dev.azure.com/o/Old%20One/_workitems/edit/7", "status": "done", "risk": "low",
+            "aiSuitable": true, "confidence": "high", "recommendation": "ai", "summary": "", "reason": "", "approach": "",
+            "files": [], "repo": null, "branch": null, "manipulation": null, "tagged": false, "commented": false, "error": null,
+            "attempts": 0, "triagedAt": null, "durationSecs": 0
+        }))
+        .unwrap();
+        engine.update_triage(|t| t.records.push(record));
+
+        assert!(engine.rename_project("Old One", "other").unwrap_err().to_string().contains("already a project called other"));
+        assert!(engine.rename_project("Old One", " ").is_err());
+        let settings = engine.rename_project("Old One", "New One").unwrap();
+        let config = settings.project("New One").unwrap();
+        assert_eq!((config.areas[0].project.as_str(), config.areas[0].area_path.as_str()), ("New One", "New One\\Web"));
+        let record = engine.triage().records.remove(0);
+        assert_eq!(record.project, "New One");
+        assert_eq!(record.area_path, "New One\\Web\\Api");
+        assert_eq!(record.url, "https://dev.azure.com/o/New%20One/_workitems/edit/7");
+        assert!(Store::new(tmp.path().to_path_buf()).settings().project("New One").is_some());
+        assert_eq!(rename_area("Old Oneself", "Old One", "New"), "Old Oneself");
     }
 }

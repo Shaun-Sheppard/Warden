@@ -280,6 +280,11 @@ const later = <T,>(value: T, ms = 150) => new Promise<T>((resolve) => setTimeout
 export const mockApi: Api = {
   getSettings: () => later(settings),
   saveSettings: (s) => { settings = s; liveHandlers.forEach((h) => h(live())); return later(s); },
+  renameProject: (old, name) => {
+    if (settings.projectConfigs?.some((c) => c.name.toLowerCase() === name.toLowerCase() && c.name !== old)) return Promise.reject(`There is already a project called ${name}`);
+    settings = { ...settings, projectConfigs: settings.projectConfigs?.map((c) => (c.name === old ? { ...c, name, areas: c.areas.map((a) => ({ ...a, project: name })) } : c)) };
+    return later(settings);
+  },
   getLive: () => later(live()),
   getHistory: () => later(history),
   checkNow: () => {

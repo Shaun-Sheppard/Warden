@@ -92,6 +92,12 @@ fn save_settings(engine: Shared, settings: Settings) -> Result<Settings, String>
     engine.update_settings(settings).map_err(err)
 }
 
+/// Renames a project after it was renamed in Azure DevOps.
+#[tauri::command]
+fn rename_project(engine: Shared, old: String, new: String) -> Result<Settings, String> {
+    engine.rename_project(&old, &new).map_err(err)
+}
+
 /// The built-in review guidance, shown as the starting point for a custom prompt.
 #[tauri::command]
 fn default_prompt() -> &'static str {
@@ -591,6 +597,7 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            rename_project,
             get_settings,
             save_settings,
             default_prompt,
